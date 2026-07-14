@@ -27,7 +27,6 @@ dist/
 # Logs and temporary files
 *.log
 *.out
-*.pt
 *.bmp
 *.xml
 dev-server.log
