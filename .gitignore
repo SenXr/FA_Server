@@ -35,7 +35,6 @@ dev-server.err.log
 swagger-ui-dist-*.tgz
 log/
 logs/
-tmp/
 temp/
 
 # Environment files
