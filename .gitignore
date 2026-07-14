@@ -27,7 +27,9 @@ dist/
 # Logs and temporary files
 *.log
 *.out
-*.pid
+*.pt
+*.bmp
+*.xml
 dev-server.log
 dev-server.err.log
 swagger-ui-dist-*.tgz
