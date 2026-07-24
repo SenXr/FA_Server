@@ -102,6 +102,9 @@ class Raw2BmpTaskSession:
 
         self.folder.mkdir(parents=True, exist_ok=True)
         self.xml_config = self.processor.load_folder_config(str(self.folder))
+        assert self.xml_config is not None, (
+            f"RAW to BMP XML configuration was not loaded from {self.folder}"
+        )
         if not self.xml_config:
             raise RuntimeError(f"No XML configuration file found in {self.folder}")
 
