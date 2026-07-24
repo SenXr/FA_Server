@@ -152,6 +152,7 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             app = create_app(AppConfig(local_root=Path(temp_dir)))
             local_root = str(Path(temp_dir) / "data")
+            model_path = str(Path(temp_dir) / "models" / "best_model.pth")
 
             with app.test_request_context(
                 "/api/v1/super-resolution/tasks",
@@ -159,6 +160,7 @@ class AppTests(unittest.TestCase):
                 data=(
                     '{"folder_name":"raw_test",'
                     f'"local_root":"{local_root}",'
+                    f'"model_path":"{model_path}",'
                     '"batch_size":3}'
                 ),
                 content_type="application/json",
@@ -167,6 +169,7 @@ class AppTests(unittest.TestCase):
 
             self.assertEqual("raw_test", payload["folder_name"])
             self.assertEqual(normalize_path_text(local_root), payload["local_root"])
+            self.assertEqual(normalize_path_text(model_path), payload["model_path"])
 
     def test_invalid_json_reports_json_error(self):
         app = create_app(AppConfig())

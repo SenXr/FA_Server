@@ -19,12 +19,20 @@ class RecordingModelRunner:
     def __init__(self):
         self.calls: list[list[str]] = []
         self.loaded = False
+        self.model_paths: list[Path] = []
 
-    def ensure_loaded(self) -> object:
+    def ensure_loaded(self, model_path: Path) -> object:
         self.loaded = True
+        self.model_paths.append(model_path)
         return object()
 
-    def enhance(self, paths: list[str], output_dir: Path) -> list[Path]:
+    def enhance(
+        self,
+        paths: list[str],
+        output_dir: Path,
+        model_path: Path,
+    ) -> list[Path]:
+        self.model_paths.append(model_path)
         self.calls.append(paths)
         output_dir.mkdir(parents=True, exist_ok=True)
         outputs = []
@@ -36,10 +44,17 @@ class RecordingModelRunner:
 
 
 class FailingModelRunner:
-    def ensure_loaded(self) -> object:
+    def ensure_loaded(self, model_path: Path) -> object:
+        del model_path
         raise RuntimeError("model dependencies are missing")
 
-    def enhance(self, paths: list[str], output_dir: Path) -> list[Path]:
+    def enhance(
+        self,
+        paths: list[str],
+        output_dir: Path,
+        model_path: Path,
+    ) -> list[Path]:
+        del paths, output_dir, model_path
         raise AssertionError("enhance should not run when model loading fails")
 
 
@@ -60,6 +75,33 @@ class FakeClock:
 
 
 class SuperResolutionServiceTests(unittest.TestCase):
+    def test_build_request_accepts_absolute_model_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir).resolve()
+            model_path = root / "models" / "production_model.pth"
+            service = SuperResolutionService(AppConfig(local_root=root))
+
+            request = service.build_request(
+                {
+                    "folder_name": "folder",
+                    "local_root": str(root),
+                    "model_path": str(model_path),
+                }
+            )
+
+            self.assertEqual(model_path, request.model_path)
+
+    def test_build_request_rejects_relative_model_path(self):
+        service = SuperResolutionService(AppConfig())
+
+        with self.assertRaisesRegex(ValueError, "absolute path"):
+            service.build_request(
+                {
+                    "folder_name": "folder",
+                    "model_path": "models/production_model.pth",
+                }
+            )
+
     def test_super_resolution_task_table_complete_checks_sqlite_statuses(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -140,6 +182,7 @@ class SuperResolutionServiceTests(unittest.TestCase):
             image_a.write_bytes(b"a")
             image_b.write_bytes(b"b")
             runner = SuperResolutionService(AppConfig(local_root=root)).model_runner
+            model_path = root / "selected_model.pth"
 
             with (
                 patch(
@@ -154,10 +197,19 @@ class SuperResolutionServiceTests(unittest.TestCase):
                     ),
                 ),
             ):
-                first = runner.enhance([str(image_a)], root / "Super_Resolution")
-                second = runner.enhance([str(image_b)], root / "Super_Resolution")
+                first = runner.enhance(
+                    [str(image_a)],
+                    root / "Super_Resolution",
+                    model_path,
+                )
+                second = runner.enhance(
+                    [str(image_b)],
+                    root / "Super_Resolution",
+                    model_path,
+                )
 
         self.assertEqual(1, load_model.call_count)
+        self.assertEqual(str(model_path.resolve()), load_model.call_args.args[0])
         self.assertEqual(2, model.calls)
         self.assertEqual("a_sr.bmp", first[0].name)
         self.assertEqual("b_sr.bmp", second[0].name)
@@ -206,6 +258,10 @@ class SuperResolutionServiceTests(unittest.TestCase):
             self.assertEqual(
                 "completed",
                 repository.get_sr_job(job_id)["status"],
+            )
+            self.assertEqual(
+                str(request.model_path),
+                repository.get_sr_job(job_id)["model_path"],
             )
             self.assertTrue(runner.loaded)
 
