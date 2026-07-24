@@ -58,6 +58,69 @@ class FailingModelRunner:
         raise AssertionError("enhance should not run when model loading fails")
 
 
+class IntegerResultModelRunner:
+    def __init__(self):
+        self.batch_sizes: list[int] = []
+
+    def ensure_loaded(self, model_path: Path) -> object:
+        del model_path
+        return object()
+
+    def enhance(
+        self,
+        paths: list[str],
+        output_dir: Path,
+        model_path: Path,
+    ) -> int:
+        del output_dir, model_path
+        self.batch_sizes.append(len(paths))
+        return len(paths)
+
+
+class NoneItemResultModelRunner:
+    def ensure_loaded(self, model_path: Path) -> object:
+        del model_path
+        return object()
+
+    def enhance(
+        self,
+        paths: list[str],
+        output_dir: Path,
+        model_path: Path,
+    ) -> list[None]:
+        del output_dir, model_path
+        return [None] * len(paths)
+
+
+class FailOnSecondBatchRunner:
+    def __init__(self):
+        self.call_count = 0
+
+    def ensure_loaded(self, model_path: Path) -> object:
+        del model_path
+        return object()
+
+    def enhance(
+        self,
+        paths: list[str],
+        output_dir: Path,
+        model_path: Path,
+    ) -> list[Path] | int:
+        del model_path
+        self.call_count += 1
+        if self.call_count == 2:
+            return len(paths) - 1
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        outputs = []
+        for path in paths:
+            source = Path(path)
+            output = output_dir / f"{source.stem}_sr{source.suffix}"
+            output.write_bytes(b"sr")
+            outputs.append(output)
+        return outputs
+
+
 class FakeClock:
     def __init__(self):
         self.now = 0.0
@@ -75,6 +138,23 @@ class FakeClock:
 
 
 class SuperResolutionServiceTests(unittest.TestCase):
+    @staticmethod
+    def add_pending_images(
+        repository: TaskRepository,
+        folder: Path,
+        count: int,
+    ) -> None:
+        for index in range(count):
+            image_path = folder / f"{index:05d}.bmp"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"bmp")
+            repository.upsert_raw_file(
+                folder_name=folder.name,
+                raw_path=image_path,
+                sync_job_id="sync",
+                transcode_rename_enabled=False,
+            )
+
     def test_build_request_accepts_absolute_model_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir).resolve()
@@ -288,6 +368,121 @@ class SuperResolutionServiceTests(unittest.TestCase):
             self.assertEqual("failed", job["status"])
             self.assertEqual("model dependencies are missing", job["error_message"])
             self.assertEqual(0, job["processed_file_count"])
+
+    def test_integer_batch_result_marks_input_tasks_done(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            folder = root / "folder"
+            repository = TaskRepository(folder / "tasks.sqlite3")
+            self.add_pending_images(repository, folder, 301)
+            runner = IntegerResultModelRunner()
+            service = SuperResolutionService(
+                AppConfig(local_root=root),
+                runner,
+            )
+            request = SuperResolutionTaskRequest(
+                folder_name="folder",
+                local_root=root,
+                batch_size=150,
+                process_partial_batch=True,
+                idle_timeout_seconds=0,
+            )
+            job_id, _ = service.create_job(request)
+
+            service.run_job(job_id, request)
+
+            self.assertEqual([150, 150, 1], runner.batch_sizes)
+            self.assertEqual(
+                {"done": 301},
+                repository.count_images_by_sr_status("folder"),
+            )
+            with repository.connect() as connection:
+                missing_output_paths = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM image_tasks
+                    WHERE sr_status = 'done' AND sr_output_path IS NULL
+                    """
+                ).fetchone()[0]
+            self.assertEqual(301, missing_output_paths)
+            job = repository.get_sr_job(job_id)
+            assert job is not None
+            self.assertEqual("completed", job["status"])
+            self.assertEqual(301, job["processed_file_count"])
+
+    def test_none_result_items_mark_input_tasks_done(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            folder = root / "folder"
+            repository = TaskRepository(folder / "tasks.sqlite3")
+            self.add_pending_images(repository, folder, 3)
+            service = SuperResolutionService(
+                AppConfig(local_root=root),
+                NoneItemResultModelRunner(),
+            )
+            request = SuperResolutionTaskRequest(
+                folder_name="folder",
+                local_root=root,
+                batch_size=3,
+                process_partial_batch=True,
+                idle_timeout_seconds=0,
+            )
+            job_id, _ = service.create_job(request)
+
+            service.run_job(job_id, request)
+
+            self.assertEqual(
+                {"done": 3},
+                repository.count_images_by_sr_status("folder"),
+            )
+            with repository.connect() as connection:
+                output_path_count = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM image_tasks
+                    WHERE sr_output_path IS NOT NULL
+                    """
+                ).fetchone()[0]
+            self.assertEqual(0, output_path_count)
+            job = repository.get_sr_job(job_id)
+            assert job is not None
+            self.assertEqual("completed", job["status"])
+            self.assertEqual(3, job["processed_file_count"])
+
+    def test_second_batch_failure_does_not_leave_future_batches_processing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            folder = root / "folder"
+            repository = TaskRepository(folder / "tasks.sqlite3")
+            self.add_pending_images(repository, folder, 304)
+            runner = FailOnSecondBatchRunner()
+            service = SuperResolutionService(
+                AppConfig(local_root=root),
+                runner,
+            )
+            request = SuperResolutionTaskRequest(
+                folder_name="folder",
+                local_root=root,
+                batch_size=150,
+                process_partial_batch=True,
+                idle_timeout_seconds=0,
+            )
+            job_id, _ = service.create_job(request)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "processed 149 of 150",
+            ):
+                service.run_job(job_id, request)
+
+            self.assertEqual(
+                {"done": 150, "failed": 150, "pending": 4},
+                repository.count_images_by_sr_status("folder"),
+            )
+            job = repository.get_sr_job(job_id)
+            assert job is not None
+            self.assertEqual("failed", job["status"])
+            self.assertEqual(150, job["processed_file_count"])
 
     def test_can_process_partial_batch_when_enabled(self):
         with tempfile.TemporaryDirectory() as temp_dir:
