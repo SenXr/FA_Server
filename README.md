@@ -173,6 +173,16 @@ Authorization: Bearer <api-key>
 
 当前仓库内的算法实现主要用于本地联调和流程验证。
 
+## 重置超分辨记录
+
+停止接口服务后，执行：
+
+```powershell
+.\.venv\Scripts\python scripts\reset_sr_records.py D:\data\folder\tasks.sqlite3
+```
+
+脚本会自动备份数据库、删除 `sr_jobs`，并将已完成转码的图片恢复为超分辨 `pending` 状态。检测到 `queued` 或 `running` 任务时会拒绝操作；确认原进程已停止后可使用 `--force`。如明确不需要备份，可使用 `--no-backup`。
+
 ## 测试
 
 ```powershell
