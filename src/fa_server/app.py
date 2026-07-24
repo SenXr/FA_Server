@@ -172,6 +172,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
                     {
                         "job_id": job_id,
                         "folder_name": sr_request.folder_name,
+                        "model_path": str(sr_request.model_path),
                         "database_path": str(db_path),
                         "status_url": (
                             f"/api/v1/super-resolution/tasks/{job_id}"
@@ -236,7 +237,7 @@ def parse_lenient_json_payload() -> dict | None:
 
 
 def normalize_json_path_backslashes(body: str) -> str:
-    path_fields = ("local_root", "rsync")
+    path_fields = ("local_root", "model_path", "rsync")
     pattern = re.compile(r'("(?:' + "|".join(path_fields) + r')"\s*:\s*")([^"]*)(")')
 
     def replace_path(match: re.Match[str]) -> str:

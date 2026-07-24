@@ -200,6 +200,11 @@ OPENAPI_SPEC = {
                         "type": "string",
                         "default": "D:/Agent/ChatAgent/PWQ/FA_Server/data/rsync_data",
                     },
+                    "model_path": {
+                        "type": "string",
+                        "example": "D:/models/super_resolution/best_model.pth",
+                        "description": "Absolute path passed to ep5_enhancement.load_model().",
+                    },
                     "batch_size": {"type": "integer", "default": 3},
                     "process_partial_batch": {"type": "boolean", "default": True},
                     "idle_timeout_seconds": {"type": "integer", "default": 600},
@@ -278,6 +283,7 @@ OPENAPI_SPEC = {
                 "properties": {
                     "job_id": {"type": "string"},
                     "folder_name": {"type": "string"},
+                    "model_path": {"type": "string"},
                     "database_path": {"type": "string"},
                     "status_url": {"type": "string"},
                 },

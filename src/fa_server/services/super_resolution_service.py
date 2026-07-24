@@ -28,6 +28,7 @@ DEFAULT_SR_MODEL_PATH = PROJECT_ROOT / "models" / "super_resolution" / "best_mod
 class SuperResolutionTaskRequest:
     folder_name: str
     local_root: Path
+    model_path: Path = DEFAULT_SR_MODEL_PATH
     batch_size: int = 3
     process_partial_batch: bool = True
     idle_timeout_seconds: int = 600
@@ -39,19 +40,31 @@ class SuperResolutionTaskRequest:
 class ModelRunner:
     def __init__(self):
         self._lock = threading.Lock()
-        self._model_session: tuple[object, UNetGANConfig] | None = None
+        self._model_sessions: dict[
+            Path,
+            tuple[object, UNetGANConfig],
+        ] = {}
 
-    def ensure_loaded(self) -> tuple[object, UNetGANConfig]:
+    def ensure_loaded(
+        self,
+        model_path: Path = DEFAULT_SR_MODEL_PATH,
+    ) -> tuple[object, UNetGANConfig]:
+        resolved_model_path = model_path.expanduser().resolve()
         with self._lock:
-            if self._model_session is None:
-                self._model_session = load_ep5_model(
-                    str(DEFAULT_SR_MODEL_PATH.resolve()),
+            if resolved_model_path not in self._model_sessions:
+                self._model_sessions[resolved_model_path] = load_ep5_model(
+                    str(resolved_model_path),
                     config=UNetGANConfig(),
                 )
-            return self._model_session
+            return self._model_sessions[resolved_model_path]
 
-    def enhance(self, paths: list[str], output_dir: Path) -> list[Path]:
-        model, config = self.ensure_loaded()
+    def enhance(
+        self,
+        paths: list[str],
+        output_dir: Path,
+        model_path: Path = DEFAULT_SR_MODEL_PATH,
+    ) -> list[Path]:
+        model, config = self.ensure_loaded(model_path)
         return batch_process_ep5(
             input_paths=paths,
             output_path=str(output_dir),
@@ -76,6 +89,11 @@ class SuperResolutionService:
 
     def build_request(self, payload: dict) -> SuperResolutionTaskRequest:
         folder_name = validate_folder_name(payload.get("folder_name", ""))
+        model_path = path_from_user_input(
+            payload.get("model_path") or DEFAULT_SR_MODEL_PATH
+        ).expanduser()
+        if not model_path.is_absolute():
+            raise ValueError("model_path must be an absolute path")
         batch_size = int(
             payload.get("batch_size", self.config.super_resolution_batch_size)
         )
@@ -86,6 +104,7 @@ class SuperResolutionService:
             local_root=path_from_user_input(
                 payload.get("local_root") or self.config.local_root
             ),
+            model_path=model_path.resolve(),
             batch_size=batch_size,
             process_partial_batch=bool(payload.get("process_partial_batch", True)),
             idle_timeout_seconds=int(
@@ -119,6 +138,7 @@ class SuperResolutionService:
             job_id=job_id,
             folder_name=request.folder_name,
             output_dir=output_dir,
+            model_path=request.model_path,
             batch_size=request.batch_size,
             process_partial_batch=request.process_partial_batch,
             idle_timeout_seconds=request.idle_timeout_seconds,
@@ -139,7 +159,7 @@ class SuperResolutionService:
 
         repository.update_sr_job(job_id, status="running", started_at=utc_now())
         try:
-            self.model_runner.ensure_loaded()
+            self.model_runner.ensure_loaded(request.model_path)
             while True:
                 batch_queue = self._build_batch_queue(repository, request)
                 processed_now = self._drain_batch_queue(
@@ -147,6 +167,7 @@ class SuperResolutionService:
                     batch_queue,
                     output_dir,
                     repository,
+                    request.model_path,
                 )
                 if processed_now:
                     processed_count += processed_now
@@ -222,6 +243,7 @@ class SuperResolutionService:
         batch_queue: queue.Queue[list[ImageTask]],
         output_dir: Path,
         repository: TaskRepository,
+        model_path: Path,
     ) -> int:
         processed_count = 0
         while not batch_queue.empty():
@@ -230,6 +252,7 @@ class SuperResolutionService:
                 batch_queue.get_nowait(),
                 output_dir,
                 repository,
+                model_path,
             )
         return processed_count
 
@@ -239,11 +262,12 @@ class SuperResolutionService:
         batch: list[ImageTask],
         output_dir: Path,
         repository: TaskRepository,
+        model_path: Path,
     ) -> int:
         repository.mark_sr_processing((task.id for task in batch), job_id)
         paths = [str(Path(task.sr_input_path).resolve()) for task in batch]
         try:
-            outputs = self.model_runner.enhance(paths, output_dir)
+            outputs = self.model_runner.enhance(paths, output_dir, model_path)
         except Exception as exc:
             for task in batch:
                 repository.mark_sr_failed(task.id, str(exc))

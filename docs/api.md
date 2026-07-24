@@ -289,6 +289,7 @@ POST /api/v1/super-resolution/tasks
 | --- | --- | --- | --- |
 | `folder_name` | string | 无 | 必填，任务文件夹名称 |
 | `local_root` | string | `FA_LOCAL_ROOT` | 本地数据根目录 |
+| `model_path` | string | 项目默认模型 | 超分辨模型的绝对路径，传给 `ep5_enhancement.load_model()` |
 | `batch_size` | integer | `3` | 每批传入模型的图片数量 |
 | `process_partial_batch` | boolean | `true` | 是否处理不足一个 batch 的尾批 |
 | `idle_timeout_seconds` | integer | `600` | 无新增可处理图片后的结束超时时间 |
@@ -302,6 +303,7 @@ POST /api/v1/super-resolution/tasks
 {
   "folder_name": "raw_test",
   "local_root": "D:/Agent/ChatAgent/PWQ/FA_Server/data/rsync_data",
+  "model_path": "D:/models/super_resolution/best_model.pth",
   "batch_size": 3,
   "process_partial_batch": true,
   "idle_timeout_seconds": 600,
@@ -327,7 +329,7 @@ CMD 示例：
 curl -X POST "http://127.0.0.1:5000/api/v1/super-resolution/tasks" ^
   -H "X-API-Key: dev-api-key" ^
   -H "Content-Type: application/json" ^
-  -d "{\"folder_name\":\"raw_test\",\"local_root\":\"D:/Agent/ChatAgent/PWQ/FA_Server/data/rsync_data\",\"batch_size\":3,\"process_partial_batch\":true}"
+  -d "{\"folder_name\":\"raw_test\",\"local_root\":\"D:/Agent/ChatAgent/PWQ/FA_Server/data/rsync_data\",\"model_path\":\"D:/models/super_resolution/best_model.pth\",\"batch_size\":3,\"process_partial_batch\":true}"
 ```
 
 ## 查询超分辨任务

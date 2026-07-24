@@ -95,6 +95,7 @@ class TaskRepository:
                     job_id TEXT PRIMARY KEY,
                     folder_name TEXT NOT NULL,
                     output_dir TEXT NOT NULL,
+                    model_path TEXT NOT NULL,
                     batch_size INTEGER NOT NULL,
                     process_partial_batch INTEGER NOT NULL,
                     idle_timeout_seconds INTEGER NOT NULL DEFAULT 600,
@@ -152,6 +153,7 @@ class TaskRepository:
                 "poll_interval_seconds",
                 "INTEGER NOT NULL DEFAULT 10",
             )
+            self._ensure_column(conn, "sr_jobs", "model_path", "TEXT")
             conn.commit()
         finally:
             conn.close()
@@ -253,6 +255,7 @@ class TaskRepository:
         job_id: str,
         folder_name: str,
         output_dir: Path,
+        model_path: Path,
         batch_size: int,
         process_partial_batch: bool,
         idle_timeout_seconds: int = 600,
@@ -279,16 +282,17 @@ class TaskRepository:
             conn.execute(
                 """
                 INSERT INTO sr_jobs (
-                    job_id, folder_name, output_dir, batch_size,
+                    job_id, folder_name, output_dir, model_path, batch_size,
                     process_partial_batch, idle_timeout_seconds,
                     poll_interval_seconds, status, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)
                 """,
                 (
                     job_id,
                     folder_name,
                     str(output_dir),
+                    str(model_path),
                     batch_size,
                     int(process_partial_batch),
                     idle_timeout_seconds,
