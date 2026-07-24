@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +18,7 @@ from fa_server.services.sync_service import (
     sync_completion_status,
 )
 from fa_server.services.raw2bmp_service import RawFileManifest, sync_manifest_complete
+from fa_server.storage import TaskRepository
 
 
 class SyncServiceTests(unittest.TestCase):
@@ -140,6 +143,62 @@ class SyncServiceTests(unittest.TestCase):
         self.assertEqual("completed", sync_completion_status(manifest, 2))
         self.assertEqual("partially_completed", sync_completion_status(manifest, 1))
         self.assertEqual("completed", sync_completion_status(None, 1))
+
+    def test_resynced_raw_is_removed_using_recorded_final_bmp_path(self):
+        class FakeRaw2BmpSession:
+            def __init__(self, final_path: Path):
+                self.final_path = final_path
+                self.call_count = 0
+
+            def transcode_and_rename_raw(self, raw_path: Path) -> Path:
+                del raw_path
+                self.call_count += 1
+                self.final_path.write_bytes(b"bmp")
+                return self.final_path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_root = Path(temp_dir)
+            local_dir = local_root / "production_folder"
+            local_dir.mkdir()
+            raw_path = local_dir / "source.raw"
+            raw_path.write_bytes(b"raw")
+            original_mtime_ns = raw_path.stat().st_mtime_ns
+            final_path = local_dir / "coordinate_123_456.bmp"
+
+            service = SyncService(AppConfig(local_root=local_root))
+            request = service.build_request(
+                {
+                    "folder_name": "production_folder",
+                    "local_root": str(local_root),
+                    "raw_extensions": [".raw"],
+                    "enable_transcode_rename": True,
+                }
+            )
+            repository = TaskRepository(local_dir / "tasks.sqlite3")
+            session = FakeRaw2BmpSession(final_path)
+
+            service._register_new_files(
+                "job-1",
+                request,
+                local_dir,
+                repository,
+                session,
+            )
+            self.assertFalse(raw_path.exists())
+            self.assertTrue(final_path.exists())
+
+            raw_path.write_bytes(b"raw")
+            os.utime(raw_path, ns=(original_mtime_ns, original_mtime_ns))
+            service._register_new_files(
+                "job-2",
+                request,
+                local_dir,
+                repository,
+                session,
+            )
+
+            self.assertEqual(1, session.call_count)
+            self.assertFalse(raw_path.exists())
 
 
 if __name__ == "__main__":

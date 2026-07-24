@@ -154,7 +154,7 @@ class Raw2BmpIntegrationTests(unittest.TestCase):
                 sorted(path.name for path in root.iterdir()),
             )
 
-    def test_cleanup_removes_resynced_sources_when_final_exists(self):
+    def test_cleanup_does_not_guess_raw_mapping_from_filename(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             (root / "raw_test_001.raw").write_bytes(b"raw")
@@ -164,7 +164,10 @@ class Raw2BmpIntegrationTests(unittest.TestCase):
 
             cleanup_redundant_files(root)
 
-            self.assertEqual(["raw_test_001T.bmp"], sorted(path.name for path in root.iterdir()))
+            self.assertEqual(
+                ["raw_test_001.raw", "raw_test_001T.bmp"],
+                sorted(path.name for path in root.iterdir()),
+            )
 
     def test_cleanup_removes_tmp_files_and_discovery_skips_them(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -417,6 +417,22 @@ class TaskRepository:
                 ),
             )
 
+    def get_completed_final_bmp_path(self, image_task_id: int) -> Path | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT final_bmp_path
+                FROM image_tasks
+                WHERE id = ?
+                  AND transcode_status = 'done'
+                  AND rename_status = 'done'
+                """,
+                (image_task_id,),
+            ).fetchone()
+        if row is None or not row["final_bmp_path"]:
+            return None
+        return Path(row["final_bmp_path"])
+
     def mark_conversion_failed(self, image_task_id: int, error_message: str) -> None:
         with self.connect() as conn:
             conn.execute(

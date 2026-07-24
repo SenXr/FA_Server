@@ -216,6 +216,12 @@ class SyncService:
                 transcode_rename_enabled=request.enable_transcode_rename,
             )
             if not inserted:
+                if request.enable_transcode_rename:
+                    final_bmp_path = repository.get_completed_final_bmp_path(
+                        image_task_id
+                    )
+                    if final_bmp_path is not None and final_bmp_path.is_file():
+                        cleanup_source_artifacts(raw_path, final_bmp_path)
                 continue
 
             new_count += 1
@@ -373,15 +379,6 @@ def cleanup_redundant_files(root: Path) -> None:
         for path in root.rglob("*.raw")
         if path.is_file()
     }
-    for raw_path in root.rglob("*.raw"):
-        if not raw_path.is_file():
-            continue
-        if "Super_Resolution" in raw_path.parts:
-            continue
-        final_path = raw_path.with_name(f"{raw_path.stem}T.bmp")
-        if final_path.exists():
-            raw_path.unlink(missing_ok=True)
-
     for path in root.rglob("*.bmp"):
         if not path.is_file():
             continue
