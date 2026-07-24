@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import queue
 import threading
 import time
 import uuid
 from dataclasses import dataclass
+from numbers import Integral
 from pathlib import Path
+from typing import Any
 
 from fa_server.config import AppConfig
 from ep5_enhancement import UNetGANConfig
@@ -63,7 +64,7 @@ class ModelRunner:
         paths: list[str],
         output_dir: Path,
         model_path: Path = DEFAULT_SR_MODEL_PATH,
-    ) -> list[Path]:
+    ) -> Any:
         model, config = self.ensure_loaded(model_path)
         return batch_process_ep5(
             input_paths=paths,
@@ -161,16 +162,15 @@ class SuperResolutionService:
         try:
             self.model_runner.ensure_loaded(request.model_path)
             while True:
-                batch_queue = self._build_batch_queue(repository, request)
-                processed_now = self._drain_batch_queue(
-                    job_id,
-                    batch_queue,
-                    output_dir,
-                    repository,
-                    request.model_path,
-                )
-                if processed_now:
-                    processed_count += processed_now
+                batch = self._next_batch(repository, request)
+                if batch:
+                    processed_count += self._process_batch(
+                        job_id,
+                        batch,
+                        output_dir,
+                        repository,
+                        request.model_path,
+                    )
                     last_activity_at = self.monotonic_func()
                     repository.update_sr_job(
                         job_id,
@@ -216,45 +216,18 @@ class SuperResolutionService:
             )
             raise
 
-    def _build_batch_queue(
+    def _next_batch(
         self,
         repository: TaskRepository,
         request: SuperResolutionTaskRequest,
-    ) -> queue.Queue[list[ImageTask]]:
-        batch_queue: queue.Queue[list[ImageTask]] = queue.Queue()
-        while True:
-            batch = repository.list_pending_sr(
-                request.folder_name,
-                limit=request.batch_size,
-            )
-            if not batch:
-                return batch_queue
-            if len(batch) < request.batch_size and not request.process_partial_batch:
-                return batch_queue
-            batch_queue.put(batch)
-            if len(batch) < request.batch_size:
-                return batch_queue
-
-            repository.mark_sr_processing((task.id for task in batch), "queued")
-
-    def _drain_batch_queue(
-        self,
-        job_id: str,
-        batch_queue: queue.Queue[list[ImageTask]],
-        output_dir: Path,
-        repository: TaskRepository,
-        model_path: Path,
-    ) -> int:
-        processed_count = 0
-        while not batch_queue.empty():
-            processed_count += self._process_batch(
-                job_id,
-                batch_queue.get_nowait(),
-                output_dir,
-                repository,
-                model_path,
-            )
-        return processed_count
+    ) -> list[ImageTask]:
+        batch = repository.list_pending_sr(
+            request.folder_name,
+            limit=request.batch_size,
+        )
+        if len(batch) < request.batch_size and not request.process_partial_batch:
+            return []
+        return batch
 
     def _process_batch(
         self,
@@ -267,21 +240,41 @@ class SuperResolutionService:
         repository.mark_sr_processing((task.id for task in batch), job_id)
         paths = [str(Path(task.sr_input_path).resolve()) for task in batch]
         try:
-            outputs = self.model_runner.enhance(paths, output_dir, model_path)
+            result = self.model_runner.enhance(paths, output_dir, model_path)
+            validate_batch_result(result, len(batch))
         except Exception as exc:
             for task in batch:
                 repository.mark_sr_failed(task.id, str(exc))
             raise
 
-        if len(outputs) != len(batch):
-            message = "super_resolve returned a different number of outputs"
-            for task in batch:
-                repository.mark_sr_failed(task.id, message)
-            raise RuntimeError(message)
-
-        for task, output in zip(batch, outputs, strict=True):
-            repository.mark_sr_done(task.id, output)
+        for task in batch:
+            repository.mark_sr_done(task.id)
         return len(batch)
+
+
+def validate_batch_result(
+    result: Any,
+    expected_count: int,
+) -> None:
+    if isinstance(result, Integral) and not isinstance(result, bool):
+        processed_count = int(result)
+        if processed_count != expected_count:
+            raise RuntimeError(
+                "super-resolution batch processed "
+                f"{processed_count} of {expected_count} input images"
+            )
+        return
+
+    if not isinstance(result, (list, tuple)):
+        raise TypeError(
+            "super-resolution batch must return an integer count "
+            "or one result item per input image"
+        )
+    if len(result) != expected_count:
+        raise RuntimeError(
+            "super-resolution batch returned "
+            f"{len(result)} result items for {expected_count} input images"
+        )
 
 
 def super_resolution_task_table_complete(

@@ -490,7 +490,14 @@ class TaskRepository:
                 (sr_job_id, utc_now(), *ids),
             )
 
-    def mark_sr_done(self, task_id: int, output_path: Path) -> None:
+    def mark_sr_done(
+        self,
+        task_id: int,
+        output_path: Path | None = None,
+    ) -> None:
+        resolved_output_path = (
+            str(output_path.resolve()) if output_path is not None else None
+        )
         with self.connect() as conn:
             conn.execute(
                 """
@@ -499,7 +506,7 @@ class TaskRepository:
                     updated_at = ?, error_message = NULL
                 WHERE id = ?
                 """,
-                (str(output_path.resolve()), utc_now(), utc_now(), task_id),
+                (resolved_output_path, utc_now(), utc_now(), task_id),
             )
 
     def mark_sr_failed(self, task_id: int, error_message: str) -> None:
