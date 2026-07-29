@@ -136,6 +136,32 @@ class AppTests(unittest.TestCase):
         self.assertEqual(400, response.status_code)
         self.assertEqual("folder_name is required", response.json["error"])
 
+    def test_parallel_super_resolution_task_returns_conflict(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = create_app(AppConfig(local_root=Path(temp_dir)))
+            client = app.test_client()
+
+            with patch(
+                "fa_server.worker.BackgroundTaskManager.submit_super_resolution"
+            ):
+                first = client.post(
+                    "/api/v1/super-resolution/tasks",
+                    headers=auth_headers(),
+                    json={"folder_name": "raw_test"},
+                )
+                second = client.post(
+                    "/api/v1/super-resolution/tasks",
+                    headers=auth_headers(),
+                    json={"folder_name": "raw_test"},
+                )
+
+            self.assertEqual(202, first.status_code)
+            self.assertEqual(409, second.status_code)
+            self.assertEqual(
+                first.json["job_id"],
+                second.json["existing_job_id"],
+            )
+
     def test_legacy_sync_create_without_route_folder_is_removed(self):
         app = create_app(AppConfig())
         client = app.test_client()

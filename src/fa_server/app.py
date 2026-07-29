@@ -184,6 +184,16 @@ def create_app(config: AppConfig | None = None) -> Flask:
             )
         except (InvalidFolderName, ValueError) as exc:
             return jsonify({"error": str(exc)}), 400
+        except ActiveJobExists as exc:
+            return (
+                jsonify(
+                    {
+                        "error": str(exc),
+                        "existing_job_id": exc.job_id,
+                    }
+                ),
+                409,
+            )
 
     @app.get("/api/v1/super-resolution/tasks/<job_id>")
     def get_super_resolution_task(job_id: str):

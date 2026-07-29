@@ -32,9 +32,12 @@ FA Server 是一个基于 Flask 的文件夹级任务服务，用于在一台服
 
 ```text
 run.py                         服务启动入口
+run_mcp.py                     FA Server stdio MCP 启动入口
 src/fa_server/                 Flask API、任务服务、SQLite 存储、后台执行器
+src/fa_server_mcp/             MCP 协议服务与 FA Server HTTP 客户端
 src/raw2bmp/                   RAW 转 BMP 与 XML 解析对接模块
 src/ep5_enhancement/           超分辨算法对接模块
+skills/fa-server-operations/   Codex 任务操作 Skill
 models/super_resolution/       超分辨模型文件目录
 data/rsync_data/               默认任务数据目录
 log/                           purge 等本地日志目录
@@ -150,6 +153,10 @@ data/rsync_data/raw_test/
 
 [docs/api.md](docs/api.md)
 
+MCP 与 Codex Skill 的配置和使用说明见：
+
+[docs/mcp_and_skill.md](docs/mcp_and_skill.md)
+
 Swagger 测试页面：
 
 ```text
@@ -193,4 +200,10 @@ Authorization: Bearer <api-key>
 
 ```powershell
 .\.venv\Scripts\python -m compileall src tests
+```
+
+MCP 服务测试：
+
+```powershell
+.\.venv\Scripts\python -m unittest tests.test_mcp_server
 ```
