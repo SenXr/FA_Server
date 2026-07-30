@@ -20,6 +20,7 @@ from fa_server.utils.paths import (
     validate_folder_name,
 )
 from fa_server.services.raw2bmp_service import (
+    DEFAULT_MANIFEST_FILENAME,
     Raw2BmpService,
     Raw2BmpTaskSession,
     RawFileManifest,
@@ -30,6 +31,7 @@ from fa_server.storage import TaskRepository, utc_now
 
 
 MAX_ACTIVE_RSYNC_SCAN_INTERVAL_SECONDS = 5.0
+MAX_MANIFEST_PREFETCH_TIMEOUT_SECONDS = 60.0
 MAX_RSYNC_ERROR_OUTPUT_BYTES = 64 * 1024
 logger = logging.getLogger(__name__)
 
@@ -144,11 +146,21 @@ class SyncService:
             started_at=utc_now(),
             last_new_file_at=utc_now(),
         )
+        logger.info(
+            "Sync job started: job_id=%s folder_name=%s local_dir=%s "
+            "enable_transcode_rename=%s raw_extensions=%s",
+            job_id,
+            request.folder_name,
+            local_dir,
+            request.enable_transcode_rename,
+            request.raw_extensions,
+        )
 
         last_new_file_at = time.monotonic()
         total_new_files = 0
         seen_file_signatures: set[tuple[str, int, int]] = set()
         raw2bmp_session = self.raw2bmp_service.create_task_session(local_dir)
+        waiting_for_xml_logged = False
 
         def process_available_files(
             *,
@@ -156,9 +168,32 @@ class SyncService:
             cleanup_sources: bool = False,
             use_seen_signatures: bool = True,
         ) -> None:
-            nonlocal last_new_file_at, total_new_files
+            nonlocal last_new_file_at, total_new_files, waiting_for_xml_logged
             if not rsync_active:
                 cleanup_redundant_files(local_dir)
+
+            if (
+                request.enable_transcode_rename
+                and not has_xml_configuration(local_dir)
+            ):
+                if not waiting_for_xml_logged and has_raw_files(local_dir):
+                    logger.warning(
+                        "RAW files are available but XML configuration is missing; "
+                        "processing is deferred: job_id=%s folder_name=%s",
+                        job_id,
+                        request.folder_name,
+                    )
+                    waiting_for_xml_logged = True
+                return
+
+            if waiting_for_xml_logged:
+                logger.info(
+                    "XML configuration is now available; RAW processing will resume: "
+                    "job_id=%s folder_name=%s",
+                    job_id,
+                    request.folder_name,
+                )
+                waiting_for_xml_logged = False
 
             new_count = self._register_new_files(
                 job_id,
@@ -183,8 +218,18 @@ class SyncService:
                 last_new_file_at=utc_now(),
                 synced_file_count=total_new_files,
             )
+            logger.info(
+                "Incremental RAW processing completed: job_id=%s folder_name=%s "
+                "new_files=%s total_files=%s rsync_active=%s",
+                job_id,
+                request.folder_name,
+                new_count,
+                total_new_files,
+                rsync_active,
+            )
 
         try:
+            self._prefetch_xml_configuration(job_id, request, local_dir)
             while True:
                 self._run_rsync_once(
                     request,
@@ -237,6 +282,77 @@ class SyncService:
             raise
         finally:
             raw2bmp_session.finish()
+
+    def _prefetch_xml_configuration(
+        self,
+        job_id: str,
+        request: SyncTaskRequest,
+        local_dir: Path,
+    ) -> None:
+        rsync_command = resolve_rsync(request.rsync_command)
+        if rsync_command is None:
+            raise FileNotFoundError(f"rsync executable not found: {request.rsync_command}")
+
+        manifest_url = f"{self._remote_url(request)}{DEFAULT_MANIFEST_FILENAME}"
+        command = [
+            rsync_command,
+            "-a",
+            manifest_url,
+            format_rsync_destination(local_dir, rsync_command),
+        ]
+        timeout_seconds = min(
+            float(request.rsync_timeout_seconds),
+            MAX_MANIFEST_PREFETCH_TIMEOUT_SECONDS,
+        )
+        logger.info(
+            "Prefetching RAW XML configuration: job_id=%s folder_name=%s source=%s",
+            job_id,
+            request.folder_name,
+            manifest_url,
+        )
+        try:
+            completed = subprocess.run(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "RAW XML configuration prefetch timed out; bulk sync will continue: "
+                "folder_name=%s timeout_seconds=%s",
+                request.folder_name,
+                timeout_seconds,
+            )
+            return
+
+        if completed.returncode == 0:
+            if has_xml_configuration(local_dir):
+                logger.info(
+                    "RAW XML configuration prefetch completed: "
+                    "folder_name=%s path=%s",
+                    request.folder_name,
+                    local_dir / DEFAULT_MANIFEST_FILENAME,
+                )
+            else:
+                logger.warning(
+                    "RAW XML configuration prefetch returned success but no XML "
+                    "file was found locally: folder_name=%s local_dir=%s",
+                    request.folder_name,
+                    local_dir,
+                )
+            return
+        if is_missing_remote_folder_error(completed):
+            logger.warning(
+                "RAW XML configuration is not available yet; bulk sync will continue: "
+                "folder_name=%s source=%s",
+                request.folder_name,
+                manifest_url,
+            )
+            return
+        completed.check_returncode()
 
     def _register_new_files(
         self,
@@ -440,8 +556,17 @@ def conversion_source_extensions(raw_extensions: tuple[str, ...]) -> tuple[str, 
 
 
 def has_xml_configuration(root: Path) -> bool:
+    if (root / DEFAULT_MANIFEST_FILENAME).is_file():
+        return True
     return any(
         path.is_file() and path.suffix.lower() == ".xml"
+        for path in root.rglob("*")
+    )
+
+
+def has_raw_files(root: Path) -> bool:
+    return any(
+        path.is_file() and path.suffix.lower() == ".raw"
         for path in root.rglob("*")
     )
 
