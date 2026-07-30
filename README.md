@@ -43,7 +43,8 @@ src/ep5_enhancement/           超分辨算法对接模块
 skills/fa-server-operations/   Codex 任务操作 Skill
 models/super_resolution/       超分辨模型文件目录
 data/rsync_data/               默认任务数据目录
-log/                           purge 等本地日志目录
+log/                           RAW 处理、purge 等专项日志目录
+logs/fa_server.log             接口服务统一主日志
 docs/api.md                    HTTP 接口文档
 tests/                         单元测试
 ```
@@ -104,6 +105,7 @@ FA_LOCAL_ROOT=<project>/data/rsync_data
 FA_RSYNC=rsync
 FA_API_KEY=dev-api-key
 FA_DATABASE_FILENAME=tasks.sqlite3
+FA_DEBUG=false
 ```
 
 同步任务相关：
@@ -131,6 +133,31 @@ FA_PURGE_ENABLED=true
 FA_PURGE_MAX_FOLDERS=10
 FA_PURGE_INTERVAL_SECONDS=86400
 FA_PURGE_LOG_FILENAME=log/purge.log
+```
+
+## 服务日志
+
+执行 `python run.py` 后，接口访问记录、后台同步任务异常、超分辨任务异常和
+RAW 单文件处理异常会统一写入：
+
+```text
+logs/fa_server.log
+```
+
+日志达到 10 MB 后自动滚动，默认保留 5 个历史文件。控制台仍会同步显示日志。
+后台任务异常会记录 `job_id`、`folder_name` 和完整 traceback，便于从接口返回的
+`error_message` 继续定位根因。
+
+Windows PowerShell 实时查看：
+
+```powershell
+Get-Content .\logs\fa_server.log -Wait
+```
+
+Linux 实时查看：
+
+```bash
+tail -f logs/fa_server.log
 ```
 
 ## 数据目录约定

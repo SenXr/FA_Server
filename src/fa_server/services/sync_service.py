@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -30,6 +31,7 @@ from fa_server.storage import TaskRepository, utc_now
 
 MAX_ACTIVE_RSYNC_SCAN_INTERVAL_SECONDS = 5.0
 MAX_RSYNC_ERROR_OUTPUT_BYTES = 64 * 1024
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -306,6 +308,12 @@ class SyncService:
                     )
                 except Exception as exc:
                     repository.mark_conversion_failed(image_task_id, str(exc))
+                    logger.exception(
+                        "RAW processing failed: job_id=%s folder_name=%s raw_path=%s",
+                        job_id,
+                        request.folder_name,
+                        raw_path,
+                    )
         return new_count
 
     def _run_rsync_once(
