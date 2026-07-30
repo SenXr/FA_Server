@@ -63,31 +63,39 @@ class Raw2BmpTaskSession:
         self._ensure_config()
         assert self.xml_config is not None
 
-        success_before = len(self.processor.result.get("success_files", []))
-        failed_before = len(self.processor.result.get("failed_files", []))
-        processed = self.processor.process_raw_file_with_config(
-            str(raw_path),
-            self.xml_config,
-            self.folder_name,
-        )
-        self.processed_count += 1
+        try:
+            success_before = len(self.processor.result.get("success_files", []))
+            failed_before = len(self.processor.result.get("failed_files", []))
+            processed = self.processor.process_raw_file_with_config(
+                str(raw_path),
+                self.xml_config,
+                self.folder_name,
+            )
+            self.processed_count += 1
 
-        if not processed:
-            failed_files = self.processor.result.get("failed_files", [])
-            if len(failed_files) > failed_before:
+            if not processed:
+                failed_files = self.processor.result.get("failed_files", [])
+                if len(failed_files) > failed_before:
+                    raise RuntimeError(
+                        failed_files[-1].get(
+                            "error",
+                            "RAW to BMP conversion failed",
+                        )
+                    )
+                raise RuntimeError("RAW to BMP conversion failed")
+
+            success_files = self.processor.result.get("success_files", [])
+            if len(success_files) <= success_before:
+                raise RuntimeError("RAW to BMP conversion produced no output")
+
+            output_path = Path(success_files[-1]["output_path"])
+            if not output_path.exists():
                 raise RuntimeError(
-                    failed_files[-1].get("error", "RAW to BMP conversion failed")
+                    f"RAW to BMP output file not found: {output_path}"
                 )
-            raise RuntimeError("RAW to BMP conversion failed")
-
-        success_files = self.processor.result.get("success_files", [])
-        if len(success_files) <= success_before:
-            raise RuntimeError("RAW to BMP conversion produced no output")
-
-        output_path = Path(success_files[-1]["output_path"])
-        if not output_path.exists():
-            raise RuntimeError(f"RAW to BMP output file not found: {output_path}")
-        return output_path
+            return output_path
+        finally:
+            self._clear_file_details()
 
     def finish(self) -> None:
         if self.finished:
@@ -107,6 +115,12 @@ class Raw2BmpTaskSession:
         )
         if not self.xml_config:
             raise RuntimeError(f"No XML configuration file found in {self.folder}")
+
+    def _clear_file_details(self) -> None:
+        for key in ("success_files", "failed_files", "input_files"):
+            values = self.processor.result.get(key)
+            if isinstance(values, list):
+                values.clear()
 
 
 def read_raw_manifest(folder: Path) -> RawFileManifest | None:

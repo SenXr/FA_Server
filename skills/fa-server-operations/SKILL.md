@@ -26,7 +26,9 @@ explicitly requests local maintenance.
 6. Call `create_super_resolution_task` only after the relevant inputs are ready.
    Pass `model_path` when the user specifies a production model.
 7. Call `get_super_resolution_job` to report progress and image status counts.
-8. Report the job IDs and terminal outcomes. Keep paths exactly as returned.
+8. Treat `partially_completed` as unfinished and report the remaining image
+   status counts.
+9. Report the job IDs and terminal outcomes. Keep paths exactly as returned.
 
 ## Apply Operational Guardrails
 

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import concurrent.futures
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -8,6 +11,7 @@ from unittest.mock import patch
 import bootstrap
 from fa_server.config import AppConfig
 from fa_server.services.super_resolution_service import (
+    ModelRunner,
     SuperResolutionService,
     SuperResolutionTaskRequest,
     super_resolution_task_table_complete,
@@ -239,6 +243,26 @@ class SuperResolutionServiceTests(unittest.TestCase):
                 super_resolution_task_table_complete(repository, "folder")
             )
 
+    def test_blocked_images_do_not_make_task_table_complete(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            folder = root / "folder"
+            repository = TaskRepository(folder / "tasks.sqlite3")
+            raw_path = folder / "image.raw"
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_bytes(b"raw")
+            _, image_id = repository.upsert_raw_file(
+                folder_name="folder",
+                raw_path=raw_path,
+                sync_job_id="sync",
+                transcode_rename_enabled=True,
+            )
+            repository.mark_conversion_failed(image_id, "conversion failed")
+
+            self.assertFalse(
+                super_resolution_task_table_complete(repository, "folder")
+            )
+
     def test_model_runner_loads_model_session_once(self):
         class FakeLoadedModel:
             def __init__(self):
@@ -294,6 +318,64 @@ class SuperResolutionServiceTests(unittest.TestCase):
         self.assertEqual("a_sr.bmp", first[0].name)
         self.assertEqual("b_sr.bmp", second[0].name)
 
+    def test_model_runner_serializes_inference_to_bound_memory(self):
+        runner = ModelRunner()
+        active_calls = 0
+        max_active_calls = 0
+        state_lock = threading.Lock()
+        start_barrier = threading.Barrier(2)
+
+        def fake_batch_process(**kwargs):
+            nonlocal active_calls, max_active_calls
+            with state_lock:
+                active_calls += 1
+                max_active_calls = max(max_active_calls, active_calls)
+            time.sleep(0.05)
+            with state_lock:
+                active_calls -= 1
+            return [Path(path) for path in kwargs["input_paths"]]
+
+        def run_inference(image_path: Path, model_path: Path) -> None:
+            start_barrier.wait()
+            runner.enhance(
+                [str(image_path)],
+                image_path.parent / "Super_Resolution",
+                model_path,
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            model_path = root / "model.pth"
+            first = root / "first.bmp"
+            second = root / "second.bmp"
+            model_path.write_bytes(b"model")
+            first.write_bytes(b"bmp")
+            second.write_bytes(b"bmp")
+
+            with (
+                patch(
+                    "fa_server.services.super_resolution_service.load_ep5_model",
+                    return_value=(object(), object()),
+                ),
+                patch(
+                    "fa_server.services.super_resolution_service.batch_process_ep5",
+                    side_effect=fake_batch_process,
+                ),
+                concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor,
+            ):
+                futures = [
+                    executor.submit(
+                        run_inference,
+                        image_path,
+                        model_path,
+                    )
+                    for image_path in (first, second)
+                ]
+                for future in futures:
+                    future.result()
+
+        self.assertEqual(1, max_active_calls)
+
     def test_processes_exact_batches_before_waiting_for_more(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -336,7 +418,7 @@ class SuperResolutionServiceTests(unittest.TestCase):
                 repository.count_images_by_sr_status("folder"),
             )
             self.assertEqual(
-                "completed",
+                "partially_completed",
                 repository.get_sr_job(job_id)["status"],
             )
             self.assertEqual(

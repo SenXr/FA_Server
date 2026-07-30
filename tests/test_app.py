@@ -237,6 +237,18 @@ class AppTests(unittest.TestCase):
             finally:
                 static_response.close()
 
+    def test_openapi_documents_partial_super_resolution_status(self):
+        app = create_app(AppConfig())
+        client = app.test_client()
+
+        response = client.get("/openapi.json")
+
+        self.assertEqual(200, response.status_code)
+        statuses = response.json["components"]["schemas"][
+            "SuperResolutionJobStatus"
+        ]["properties"]["status"]["enum"]
+        self.assertIn("partially_completed", statuses)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -146,7 +146,16 @@ OPENAPI_SPEC = {
                     {"$ref": "#/components/parameters/DatabaseFilename"},
                 ],
                 "responses": {
-                    "200": {"description": "Super-resolution task status"},
+                    "200": {
+                        "description": "Super-resolution task status",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SuperResolutionJobStatus"
+                                }
+                            }
+                        },
+                    },
                     "404": {"description": "Task not found"},
                 },
                 "security": [{"apiKeyAuth": []}],
@@ -323,6 +332,38 @@ OPENAPI_SPEC = {
                     "started_at": {"type": "string", "nullable": True},
                     "finished_at": {"type": "string", "nullable": True},
                     "last_new_file_at": {"type": "string", "nullable": True},
+                    "error_message": {"type": "string", "nullable": True},
+                },
+            },
+            "SuperResolutionJobStatus": {
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "string"},
+                    "folder_name": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "queued",
+                            "running",
+                            "completed",
+                            "partially_completed",
+                            "failed",
+                        ],
+                    },
+                    "batch_size": {"type": "integer"},
+                    "process_partial_batch": {"type": "integer"},
+                    "output_dir": {"type": "string"},
+                    "model_path": {"type": "string"},
+                    "processed_file_count": {"type": "integer"},
+                    "image_counts": {
+                        "type": "object",
+                        "additionalProperties": {"type": "integer"},
+                    },
+                    "idle_timeout_seconds": {"type": "integer"},
+                    "poll_interval_seconds": {"type": "integer"},
+                    "created_at": {"type": "string"},
+                    "started_at": {"type": "string", "nullable": True},
+                    "finished_at": {"type": "string", "nullable": True},
                     "error_message": {"type": "string", "nullable": True},
                 },
             },

@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from fa_server.config import AppConfig
 from fa_server.utils.paths import (
@@ -24,6 +26,10 @@ from fa_server.services.raw2bmp_service import (
     sync_manifest_complete,
 )
 from fa_server.storage import TaskRepository, utc_now
+
+
+MAX_ACTIVE_RSYNC_SCAN_INTERVAL_SECONDS = 5.0
+MAX_RSYNC_ERROR_OUTPUT_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -139,30 +145,61 @@ class SyncService:
 
         last_new_file_at = time.monotonic()
         total_new_files = 0
+        seen_file_signatures: set[tuple[str, int, int]] = set()
         raw2bmp_session = self.raw2bmp_service.create_task_session(local_dir)
+
+        def process_available_files(
+            *,
+            rsync_active: bool,
+            cleanup_sources: bool = False,
+            use_seen_signatures: bool = True,
+        ) -> None:
+            nonlocal last_new_file_at, total_new_files
+            if not rsync_active:
+                cleanup_redundant_files(local_dir)
+
+            new_count = self._register_new_files(
+                job_id,
+                request,
+                local_dir,
+                repository,
+                raw2bmp_session,
+                cleanup_sources=cleanup_sources,
+                seen_file_signatures=(
+                    seen_file_signatures
+                    if use_seen_signatures
+                    else None
+                ),
+            )
+            if not new_count:
+                return
+
+            total_new_files += new_count
+            last_new_file_at = time.monotonic()
+            repository.update_sync_job(
+                job_id,
+                last_new_file_at=utc_now(),
+                synced_file_count=total_new_files,
+            )
 
         try:
             while True:
-                self._run_rsync_once(request, local_dir)
-                cleanup_redundant_files(local_dir)
-                new_count = self._register_new_files(
-                    job_id,
+                self._run_rsync_once(
                     request,
                     local_dir,
-                    repository,
-                    raw2bmp_session,
+                    progress_callback=lambda: process_available_files(
+                        rsync_active=True
+                    ),
                 )
-                if new_count:
-                    total_new_files += new_count
-                    last_new_file_at = time.monotonic()
-                    repository.update_sync_job(
-                        job_id,
-                        last_new_file_at=utc_now(),
-                        synced_file_count=total_new_files,
-                    )
+                process_available_files(rsync_active=False)
 
                 manifest = read_raw_manifest(local_dir)
                 if manifest and sync_manifest_complete(local_dir, manifest):
+                    process_available_files(
+                        rsync_active=False,
+                        cleanup_sources=True,
+                        use_seen_signatures=False,
+                    )
                     repository.update_sync_job(
                         job_id,
                         status="completed",
@@ -172,6 +209,11 @@ class SyncService:
                     return
 
                 if time.monotonic() - last_new_file_at >= request.idle_timeout_seconds:
+                    process_available_files(
+                        rsync_active=False,
+                        cleanup_sources=True,
+                        use_seen_signatures=False,
+                    )
                     manifest = read_raw_manifest(local_dir)
                     repository.update_sync_job(
                         job_id,
@@ -201,7 +243,16 @@ class SyncService:
         local_dir: Path,
         repository: TaskRepository,
         raw2bmp_session: Raw2BmpTaskSession,
+        *,
+        cleanup_sources: bool = True,
+        seen_file_signatures: set[tuple[str, int, int]] | None = None,
     ) -> int:
+        if (
+            request.enable_transcode_rename
+            and not has_xml_configuration(local_dir)
+        ):
+            return 0
+
         new_count = 0
         extensions = (
             conversion_source_extensions(request.raw_extensions)
@@ -209,6 +260,20 @@ class SyncService:
             else request.raw_extensions
         )
         for raw_path in discover_data_files(local_dir, extensions):
+            if seen_file_signatures is not None:
+                try:
+                    stat = raw_path.stat()
+                except FileNotFoundError:
+                    continue
+                signature = (
+                    str(raw_path.resolve()),
+                    stat.st_mtime_ns,
+                    stat.st_size,
+                )
+                if signature in seen_file_signatures:
+                    continue
+                seen_file_signatures.add(signature)
+
             inserted, image_task_id = repository.upsert_raw_file(
                 folder_name=request.folder_name,
                 raw_path=raw_path,
@@ -220,7 +285,11 @@ class SyncService:
                     final_bmp_path = repository.get_completed_final_bmp_path(
                         image_task_id
                     )
-                    if final_bmp_path is not None and final_bmp_path.is_file():
+                    if (
+                        cleanup_sources
+                        and final_bmp_path is not None
+                        and final_bmp_path.is_file()
+                    ):
                         cleanup_source_artifacts(raw_path, final_bmp_path)
                 continue
 
@@ -228,7 +297,8 @@ class SyncService:
             if request.enable_transcode_rename:
                 try:
                     final_bmp_path = raw2bmp_session.transcode_and_rename_raw(raw_path)
-                    cleanup_source_artifacts(raw_path, final_bmp_path)
+                    if cleanup_sources:
+                        cleanup_source_artifacts(raw_path, final_bmp_path)
                     repository.mark_conversion_done(
                         image_task_id,
                         bmp_path=final_bmp_path,
@@ -238,22 +308,67 @@ class SyncService:
                     repository.mark_conversion_failed(image_task_id, str(exc))
         return new_count
 
-    def _run_rsync_once(self, request: SyncTaskRequest, local_dir: Path) -> None:
+    def _run_rsync_once(
+        self,
+        request: SyncTaskRequest,
+        local_dir: Path,
+        progress_callback: Callable[[], None] | None = None,
+    ) -> None:
         rsync_command = resolve_rsync(request.rsync_command)
         if rsync_command is None:
             raise FileNotFoundError(f"rsync executable not found: {request.rsync_command}")
 
         command = [
             rsync_command,
-            "-av",
+            "-a",
             self._remote_url(request),
             format_rsync_destination(local_dir, rsync_command),
         ]
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=request.rsync_timeout_seconds,
+        scan_interval = max(
+            0.1,
+            min(
+                float(request.poll_interval_seconds),
+                MAX_ACTIVE_RSYNC_SCAN_INTERVAL_SECONDS,
+            ),
+        )
+        with tempfile.TemporaryFile(mode="w+b") as process_output:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=process_output,
+            )
+            started_at = time.monotonic()
+            try:
+                while process.poll() is None:
+                    if progress_callback is not None:
+                        progress_callback()
+                    if process.poll() is not None:
+                        break
+                    if (
+                        time.monotonic() - started_at
+                        >= request.rsync_timeout_seconds
+                    ):
+                        process.kill()
+                        process.wait()
+                        raise subprocess.TimeoutExpired(
+                            command,
+                            request.rsync_timeout_seconds,
+                        )
+                    time.sleep(scan_interval)
+                returncode = process.wait()
+            except Exception:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                raise
+
+            output = read_process_output_tail(process_output)
+
+        completed = subprocess.CompletedProcess(
+            args=command,
+            returncode=returncode,
+            stdout="",
+            stderr=output,
         )
         if completed.returncode == 0:
             return
@@ -314,6 +429,21 @@ def discover_data_files(root: Path, raw_extensions: tuple[str, ...]) -> list[Pat
 def conversion_source_extensions(raw_extensions: tuple[str, ...]) -> tuple[str, ...]:
     raw_only = tuple(ext for ext in raw_extensions if ext.lower() == ".raw")
     return raw_only or (".raw",)
+
+
+def has_xml_configuration(root: Path) -> bool:
+    return any(
+        path.is_file() and path.suffix.lower() == ".xml"
+        for path in root.rglob("*")
+    )
+
+
+def read_process_output_tail(process_output) -> str:
+    process_output.flush()
+    process_output.seek(0, 2)
+    size = process_output.tell()
+    process_output.seek(max(0, size - MAX_RSYNC_ERROR_OUTPUT_BYTES))
+    return process_output.read().decode("utf-8", errors="replace")
 
 
 def is_missing_remote_folder_error(completed: subprocess.CompletedProcess[str]) -> bool:

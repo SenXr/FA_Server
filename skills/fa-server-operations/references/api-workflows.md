@@ -92,6 +92,7 @@ Sync terminal states:
 Super-resolution terminal states:
 
 - `completed`: the task has stopped normally.
+- `partially_completed`: idle timeout ended the task while images remain unfinished.
 - `failed`: inference or task execution failed.
 
 Image counts may contain:

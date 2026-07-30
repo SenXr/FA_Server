@@ -41,6 +41,7 @@ class SuperResolutionTaskRequest:
 class ModelRunner:
     def __init__(self):
         self._lock = threading.Lock()
+        self._inference_lock = threading.Lock()
         self._model_sessions: dict[
             Path,
             tuple[object, UNetGANConfig],
@@ -65,13 +66,14 @@ class ModelRunner:
         output_dir: Path,
         model_path: Path = DEFAULT_SR_MODEL_PATH,
     ) -> Any:
-        model, config = self.ensure_loaded(model_path)
-        return batch_process_ep5(
-            input_paths=paths,
-            output_path=str(output_dir),
-            model=model,
-            config=config,
-        )
+        with self._inference_lock:
+            model, config = self.ensure_loaded(model_path)
+            return batch_process_ep5(
+                input_paths=paths,
+                output_path=str(output_dir),
+                model=model,
+                config=config,
+            )
 
 
 class SuperResolutionService:
@@ -194,7 +196,10 @@ class SuperResolutionService:
                 ):
                     repository.update_sr_job(
                         job_id,
-                        status="completed",
+                        status=super_resolution_completion_status(
+                            repository,
+                            request.folder_name,
+                        ),
                         finished_at=utc_now(),
                         processed_file_count=processed_count,
                     )
@@ -286,5 +291,17 @@ def super_resolution_task_table_complete(
         return False
     if repository.has_active_sync_job(folder_name):
         return False
-    unfinished_statuses = {"pending", "processing", "pending_conversion"}
-    return not any(counts.get(status, 0) for status in unfinished_statuses)
+    return counts.get("done", 0) > 0 and not any(
+        count
+        for status, count in counts.items()
+        if status != "done"
+    )
+
+
+def super_resolution_completion_status(
+    repository: TaskRepository,
+    folder_name: str,
+) -> str:
+    if super_resolution_task_table_complete(repository, folder_name):
+        return "completed"
+    return "partially_completed"

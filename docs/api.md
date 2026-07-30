@@ -97,8 +97,14 @@ failed
 queued
 running
 completed
+partially_completed
 failed
 ```
+
+超分辨任务只有在全部图片状态均为 `done` 且同步任务已停止时才会返回
+`completed`。达到空闲超时后仍存在 `pending_conversion`、`blocked`、
+`pending`、`processing` 或 `failed` 图片时，任务结束为
+`partially_completed`，具体数量通过 `image_counts` 返回。
 
 ### SQLite 任务表
 
@@ -135,6 +141,11 @@ POST /api/v1/sync/tasks/{folder_name}
 用途：从远端 rsync 目录同步指定文件夹，并按配置执行 RAW 转 BMP 与重命名。
 
 同一个 `folder_name` 的初始同步任务只允许创建一次。重复创建会返回 `409`。
+
+单次 rsync 长时间运行时，服务会以不超过 5 秒的间隔扫描已经完成落盘的
+文件，并与网络传输并行执行 RAW 转换。RAW 文件仍按单文件顺序处理，以限制
+大图解码时的内存峰值。任务运行期间保留 RAW 文件，避免下一轮 rsync 重复
+传输；任务正常结束后再删除已成功处理的 RAW 和中间文件。
 
 路径参数：
 
@@ -368,6 +379,10 @@ GET /api/v1/super-resolution/tasks/{job_id}
   "error_message": null
 }
 ```
+
+`status=partially_completed` 表示任务已经停止等待，但仍有图片未成功完成。
+调用方应检查 `image_counts`，处理其中的 `blocked`、`pending`、
+`processing` 或 `failed` 数据后再决定是否重试。
 
 CMD 示例：
 

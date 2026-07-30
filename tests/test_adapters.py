@@ -223,6 +223,62 @@ class Raw2BmpIntegrationTests(unittest.TestCase):
         self.assertEqual((".raw",), conversion_source_extensions((".raw", ".bmp", ".xml")))
         self.assertEqual((".raw",), conversion_source_extensions((".bmp", ".xml")))
 
+    def test_raw2bmp_session_keeps_only_bounded_file_details(self):
+        class DetailRecordingProcessor:
+            def __init__(self):
+                self.result = {
+                    "success_files": [],
+                    "failed_files": [],
+                    "input_files": [],
+                    "success_count": 0,
+                    "failed_count": 0,
+                    "total_count": 0,
+                }
+
+            def load_folder_config(self, input_folder_path: str) -> dict:
+                return {"folder": input_folder_path}
+
+            def process_raw_file_with_config(
+                self,
+                raw_path: str,
+                xml_config: dict,
+                folder_name: str,
+            ) -> bool:
+                del xml_config, folder_name
+                output = Path(raw_path).with_suffix(".bmp")
+                output.write_bytes(b"bmp")
+                self.result["input_files"].append(raw_path)
+                self.result["success_files"].append(
+                    {"output_path": str(output)}
+                )
+                self.result["success_count"] += 1
+                self.result["total_count"] += 1
+                return True
+
+            def log_processing_summary(self) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            processor = DetailRecordingProcessor()
+            session = Raw2BmpService(
+                lambda: processor
+            ).create_task_session(root)
+
+            for index in range(25):
+                raw_path = root / f"{index:05d}.raw"
+                raw_path.write_bytes(b"raw")
+                session.transcode_and_rename_raw(raw_path)
+
+            self.assertLessEqual(
+                len(processor.result["success_files"]),
+                1,
+            )
+            self.assertLessEqual(
+                len(processor.result["input_files"]),
+                1,
+            )
+
 
 def write_manifest(root: Path, raw_name: str) -> None:
     (root / "raw_file_manifest.xml").write_text(

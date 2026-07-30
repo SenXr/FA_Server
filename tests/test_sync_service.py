@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import subprocess
 
 import bootstrap
@@ -12,7 +12,6 @@ from fa_server.config import AppConfig, DEFAULT_LOCAL_ROOT, DEFAULT_REMOTE_BASE
 from fa_server.services.sync_service import (
     SyncService,
     format_rsync_destination,
-    is_missing_remote_folder_error,
     is_msys_rsync,
     required_sync_file_count,
     sync_completion_status,
@@ -56,10 +55,14 @@ class SyncServiceTests(unittest.TestCase):
         self.assertTrue(destination.startswith("/d/"))
         self.assertNotIn("D:", destination)
 
-    @patch("fa_server.services.sync_service.subprocess.run")
+    @patch("fa_server.services.sync_service.subprocess.Popen")
     @patch("fa_server.services.sync_service.resolve_rsync")
-    def test_run_rsync_once_uses_configured_rsync(self, resolve_rsync, subprocess_run):
+    def test_run_rsync_once_uses_configured_rsync(self, resolve_rsync, popen):
         resolve_rsync.return_value = "rsync"
+        process = MagicMock()
+        process.poll.return_value = 0
+        process.wait.return_value = 0
+        popen.return_value = process
         service = SyncService(AppConfig())
         request = service.build_request(
             {
@@ -72,26 +75,33 @@ class SyncServiceTests(unittest.TestCase):
 
         service._run_rsync_once(request, Path("D:/tmp/fa/bmp_test"))
 
-        subprocess_run.assert_called_once()
-        command = subprocess_run.call_args.args[0]
+        popen.assert_called_once()
+        command = popen.call_args.args[0]
         self.assertEqual("rsync", command[0])
-        self.assertEqual("-av", command[1])
+        self.assertEqual("-a", command[1])
         self.assertNotIn("-avP", command)
         self.assertEqual("rsync://host/data/bmp_test/", command[2])
-        self.assertTrue(subprocess_run.call_args.kwargs["capture_output"])
+        self.assertIs(subprocess.DEVNULL, popen.call_args.kwargs["stdout"])
+        self.assertIsNot(subprocess.PIPE, popen.call_args.kwargs["stderr"])
 
-    @patch("fa_server.services.sync_service.subprocess.run")
+    @patch("fa_server.services.sync_service.subprocess.Popen")
     @patch("fa_server.services.sync_service.resolve_rsync")
     def test_missing_remote_folder_is_not_a_sync_error(
-        self, resolve_rsync, subprocess_run
+        self, resolve_rsync, popen
     ):
         resolve_rsync.return_value = "rsync"
-        subprocess_run.return_value = subprocess.CompletedProcess(
-            args=["rsync"],
-            returncode=23,
-            stdout="",
-            stderr='change_dir "/missing" failed: No such file or directory',
-        )
+
+        def start_process(command, **kwargs):
+            del command
+            kwargs["stderr"].write(
+                b'change_dir "/missing" failed: No such file or directory'
+            )
+            process = MagicMock()
+            process.poll.return_value = 23
+            process.wait.return_value = 23
+            return process
+
+        popen.side_effect = start_process
         service = SyncService(AppConfig())
         request = service.build_request(
             {
@@ -102,8 +112,6 @@ class SyncServiceTests(unittest.TestCase):
         )
 
         service._run_rsync_once(request, Path("D:/tmp/fa/missing"))
-
-        self.assertTrue(is_missing_remote_folder_error(subprocess_run.return_value))
 
     def test_sync_manifest_complete_checks_final_t_bmp_names(self):
         import tempfile
@@ -160,6 +168,10 @@ class SyncServiceTests(unittest.TestCase):
             local_root = Path(temp_dir)
             local_dir = local_root / "production_folder"
             local_dir.mkdir()
+            (local_dir / "raw_file_manifest.xml").write_text(
+                '<manifest><file name="source.raw" /></manifest>',
+                encoding="utf-8",
+            )
             raw_path = local_dir / "source.raw"
             raw_path.write_bytes(b"raw")
             original_mtime_ns = raw_path.stat().st_mtime_ns
@@ -199,6 +211,136 @@ class SyncServiceTests(unittest.TestCase):
 
             self.assertEqual(1, session.call_count)
             self.assertFalse(raw_path.exists())
+
+    def test_run_job_processes_completed_files_while_rsync_is_running(self):
+        class FakeRaw2BmpSession:
+            def transcode_and_rename_raw(self, raw_path: Path) -> Path:
+                final_path = raw_path.with_name(f"{raw_path.stem}T.bmp")
+                final_path.write_bytes(b"bmp")
+                return final_path
+
+            def finish(self) -> None:
+                return None
+
+        class FakeRaw2BmpService:
+            def create_task_session(self, folder: Path) -> FakeRaw2BmpSession:
+                del folder
+                return FakeRaw2BmpSession()
+
+        class ProgressAwareSyncService(SyncService):
+            def _run_rsync_once(
+                self,
+                request,
+                local_dir,
+                progress_callback=None,
+            ):
+                del request
+                (local_dir / "raw_file_manifest.xml").write_text(
+                    '<manifest><file name="source.raw" /></manifest>',
+                    encoding="utf-8",
+                )
+                (local_dir / "source.raw").write_bytes(b"raw")
+                if progress_callback is None:
+                    raise AssertionError(
+                        "sync processing callback was not registered"
+                    )
+
+                progress_callback()
+                if not (local_dir / "sourceT.bmp").is_file():
+                    raise AssertionError(
+                        "RAW conversion did not run before rsync completed"
+                    )
+                if not (local_dir / "source.raw").is_file():
+                    raise AssertionError(
+                        "RAW source was removed while rsync was still active"
+                    )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_root = Path(temp_dir)
+            service = ProgressAwareSyncService(
+                AppConfig(local_root=local_root),
+                FakeRaw2BmpService(),
+            )
+            request = service.build_request(
+                {
+                    "folder_name": "production_folder",
+                    "local_root": str(local_root),
+                    "enable_transcode_rename": True,
+                }
+            )
+            job_id, _ = service.create_job(request)
+
+            service.run_job(job_id, request)
+
+            repository = TaskRepository(
+                local_root / "production_folder" / "tasks.sqlite3"
+            )
+            job = repository.get_sync_job(job_id)
+            assert job is not None
+            self.assertEqual("completed", job["status"])
+            self.assertEqual(1, job["synced_file_count"])
+            self.assertFalse(
+                (local_root / "production_folder" / "source.raw").exists()
+            )
+
+    def test_active_sync_scan_does_not_reprocess_seen_raw_file(self):
+        class FakeRaw2BmpSession:
+            def __init__(self, final_path: Path):
+                self.final_path = final_path
+                self.call_count = 0
+
+            def transcode_and_rename_raw(self, raw_path: Path) -> Path:
+                del raw_path
+                self.call_count += 1
+                self.final_path.write_bytes(b"bmp")
+                return self.final_path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_root = Path(temp_dir)
+            local_dir = local_root / "production_folder"
+            local_dir.mkdir()
+            (local_dir / "raw_file_manifest.xml").write_text(
+                '<manifest><file name="source.raw" /></manifest>',
+                encoding="utf-8",
+            )
+            raw_path = local_dir / "source.raw"
+            raw_path.write_bytes(b"raw")
+            final_path = local_dir / "sourceT.bmp"
+            repository = TaskRepository(local_dir / "tasks.sqlite3")
+            service = SyncService(AppConfig(local_root=local_root))
+            request = service.build_request(
+                {
+                    "folder_name": "production_folder",
+                    "local_root": str(local_root),
+                    "enable_transcode_rename": True,
+                }
+            )
+            session = FakeRaw2BmpSession(final_path)
+            seen_signatures: set[tuple[str, int, int]] = set()
+
+            first_count = service._register_new_files(
+                "job-1",
+                request,
+                local_dir,
+                repository,
+                session,
+                cleanup_sources=False,
+                seen_file_signatures=seen_signatures,
+            )
+            second_count = service._register_new_files(
+                "job-1",
+                request,
+                local_dir,
+                repository,
+                session,
+                cleanup_sources=False,
+                seen_file_signatures=seen_signatures,
+            )
+
+            self.assertEqual(1, first_count)
+            self.assertEqual(0, second_count)
+            self.assertEqual(1, session.call_count)
+            self.assertTrue(raw_path.exists())
 
 
 if __name__ == "__main__":
