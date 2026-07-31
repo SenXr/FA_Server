@@ -21,14 +21,11 @@ explicitly requests local maintenance.
    stage depends on sync completion.
 5. Interpret the sync terminal state:
    - `completed`: continue when super-resolution was requested.
-   - `partially_completed`: stop and report expected versus synchronized counts.
    - `failed`: stop and report `error_message`.
 6. Call `create_super_resolution_task` only after the relevant inputs are ready.
    Pass `model_path` when the user specifies a production model.
 7. Call `get_super_resolution_job` to report progress and image status counts.
-8. Treat `partially_completed` as unfinished and report the remaining image
-   status counts.
-9. Report the job IDs and terminal outcomes. Keep paths exactly as returned.
+8. Report the job IDs and terminal outcomes. Keep paths exactly as returned.
 
 ## Apply Operational Guardrails
 
@@ -37,7 +34,6 @@ explicitly requests local maintenance.
 - When a tool returns 409, report `existing_job_id` and inspect that job when
   enough query context is available.
 - Treat `queued` and `running` as non-terminal states.
-- Do not describe `partially_completed` as success without noting missing data.
 - Do not infer super-resolution output names from input names. The service
   records completion against input images.
 - Ask before repeatedly polling a task unless the user requested monitoring.

@@ -43,7 +43,6 @@ class SyncTaskRequest:
     local_root: Path
     rsync_command: str = "rsync"
     enable_transcode_rename: bool = True
-    idle_timeout_seconds: int = 600
     poll_interval_seconds: int = 30
     raw_extensions: tuple[str, ...] = (".raw",)
     rsync_timeout_seconds: int = 3600
@@ -77,9 +76,6 @@ class SyncService:
                 payload.get("rsync") or self.config.rsync_command
             ),
             enable_transcode_rename=bool(payload.get("enable_transcode_rename", True)),
-            idle_timeout_seconds=int(
-                payload.get("idle_timeout_seconds", self.config.idle_timeout_seconds)
-            ),
             poll_interval_seconds=int(
                 payload.get("poll_interval_seconds", self.config.poll_interval_seconds)
             ),
@@ -125,7 +121,6 @@ class SyncService:
             remote_url=self._remote_url(request),
             local_dir=local_dir,
             transcode_rename_enabled=request.enable_transcode_rename,
-            idle_timeout_seconds=request.idle_timeout_seconds,
             poll_interval_seconds=request.poll_interval_seconds,
             job_kind=job_kind,
             allow_existing_folder=allow_existing_folder,
@@ -241,7 +236,11 @@ class SyncService:
                 process_available_files(rsync_active=False)
 
                 manifest = read_raw_manifest(local_dir)
-                if manifest and sync_manifest_complete(local_dir, manifest):
+                if manifest and sync_manifest_complete(
+                    local_dir,
+                    manifest,
+                    transcode_rename_enabled=request.enable_transcode_rename,
+                ):
                     process_available_files(
                         rsync_active=False,
                         cleanup_sources=True,
@@ -250,21 +249,6 @@ class SyncService:
                     repository.update_sync_job(
                         job_id,
                         status="completed",
-                        finished_at=utc_now(),
-                        synced_file_count=total_new_files,
-                    )
-                    return
-
-                if time.monotonic() - last_new_file_at >= request.idle_timeout_seconds:
-                    process_available_files(
-                        rsync_active=False,
-                        cleanup_sources=True,
-                        use_seen_signatures=False,
-                    )
-                    manifest = read_raw_manifest(local_dir)
-                    repository.update_sync_job(
-                        job_id,
-                        status=sync_completion_status(manifest, total_new_files),
                         finished_at=utc_now(),
                         synced_file_count=total_new_files,
                     )
@@ -507,15 +491,6 @@ class SyncService:
 def required_sync_file_count(root: Path) -> int | None:
     manifest = read_raw_manifest(root)
     return manifest.expected_count if manifest else None
-
-
-def sync_completion_status(
-    manifest: RawFileManifest | None,
-    synced_file_count: int,
-) -> str:
-    if manifest and manifest.expected_count != synced_file_count:
-        return "partially_completed"
-    return "completed"
 
 
 def discover_data_files(root: Path, raw_extensions: tuple[str, ...]) -> list[Path]:

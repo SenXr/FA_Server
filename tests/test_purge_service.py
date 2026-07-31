@@ -59,7 +59,6 @@ class PurgeServiceTests(unittest.TestCase):
                 remote_url="rsync://host/data/folder_00/",
                 local_dir=root / "folder_00",
                 transcode_rename_enabled=True,
-                idle_timeout_seconds=600,
                 poll_interval_seconds=30,
             )
 

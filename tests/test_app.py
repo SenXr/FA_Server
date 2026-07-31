@@ -67,10 +67,7 @@ class AppTests(unittest.TestCase):
                 response = client.post(
                     "/api/v1/sync/tasks/raw_test",
                     headers=auth_headers(),
-                    json={
-                        "idle_timeout_seconds": 1,
-                        "poll_interval_seconds": 1,
-                    },
+                    json={"poll_interval_seconds": 1},
                 )
 
             self.assertEqual(202, response.status_code)
@@ -93,12 +90,11 @@ class AppTests(unittest.TestCase):
                 remote_url="rsync://host/data/raw_test/",
                 local_dir=folder,
                 transcode_rename_enabled=True,
-                idle_timeout_seconds=600,
                 poll_interval_seconds=30,
             )
             repository.update_sync_job(
                 "sync-job",
-                status="partially_completed",
+                status="running",
                 synced_file_count=1,
             )
             app = create_app(AppConfig(local_root=local_root))
@@ -112,7 +108,8 @@ class AppTests(unittest.TestCase):
             self.assertEqual(200, response.status_code)
             self.assertEqual(2, response.json["required_file_count"])
             self.assertEqual(1, response.json["synced_file_count"])
-            self.assertEqual("partially_completed", response.json["status"])
+            self.assertEqual("running", response.json["status"])
+            self.assertNotIn("idle_timeout_seconds", response.json)
 
     def test_api_requires_basic_auth(self):
         app = create_app(AppConfig())
@@ -237,7 +234,7 @@ class AppTests(unittest.TestCase):
             finally:
                 static_response.close()
 
-    def test_openapi_documents_partial_super_resolution_status(self):
+    def test_openapi_uses_manifest_completion_without_idle_timeout(self):
         app = create_app(AppConfig())
         client = app.test_client()
 
@@ -247,7 +244,19 @@ class AppTests(unittest.TestCase):
         statuses = response.json["components"]["schemas"][
             "SuperResolutionJobStatus"
         ]["properties"]["status"]["enum"]
-        self.assertIn("partially_completed", statuses)
+        self.assertNotIn("partially_completed", statuses)
+        self.assertNotIn(
+            "idle_timeout_seconds",
+            response.json["components"]["schemas"][
+                "SuperResolutionTaskCreate"
+            ]["properties"],
+        )
+        self.assertNotIn(
+            "idle_timeout_seconds",
+            response.json["components"]["schemas"][
+                "SyncTaskCreateForFolder"
+            ]["properties"],
+        )
 
 
 if __name__ == "__main__":

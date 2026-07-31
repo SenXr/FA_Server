@@ -18,7 +18,6 @@ class AppConfig:
     remote_base: str = DEFAULT_REMOTE_BASE
     local_root: Path = DEFAULT_LOCAL_ROOT
     rsync_command: str = "rsync"
-    idle_timeout_seconds: int = 600
     poll_interval_seconds: int = 30
     raw_extensions: tuple[str, ...] = (".raw", ".bmp")
     rsync_timeout_seconds: int = 3600
@@ -26,7 +25,6 @@ class AppConfig:
     super_resolution_output_dirname: str = "Super_Resolution"
     super_resolution_batch_size: int = 3
     super_resolution_poll_interval_seconds: int = 10
-    super_resolution_idle_timeout_seconds: int = 600
     auth_enabled: bool = True
     api_key: str = "dev-api-key"
     purge_enabled: bool = True
@@ -45,7 +43,6 @@ class AppConfig:
                 os.getenv("FA_LOCAL_ROOT", str(DEFAULT_LOCAL_ROOT))
             ),
             rsync_command=os.getenv("FA_RSYNC", "rsync"),
-            idle_timeout_seconds=int(os.getenv("FA_IDLE_TIMEOUT_SECONDS", "600")),
             poll_interval_seconds=int(os.getenv("FA_POLL_INTERVAL_SECONDS", "30")),
             raw_extensions=tuple(
                 ext.strip().lower() for ext in raw_extensions.split(",") if ext.strip()
@@ -58,9 +55,6 @@ class AppConfig:
             super_resolution_batch_size=int(os.getenv("FA_SR_BATCH_SIZE", "3")),
             super_resolution_poll_interval_seconds=int(
                 os.getenv("FA_SR_POLL_INTERVAL_SECONDS", "10")
-            ),
-            super_resolution_idle_timeout_seconds=int(
-                os.getenv("FA_SR_IDLE_TIMEOUT_SECONDS", "600")
             ),
             auth_enabled=os.getenv("FA_AUTH_ENABLED", "true").lower()
             not in {"0", "false", "no", "off"},

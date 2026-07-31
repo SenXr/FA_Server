@@ -14,7 +14,6 @@ from fa_server.services.sync_service import (
     format_rsync_destination,
     is_msys_rsync,
     required_sync_file_count,
-    sync_completion_status,
 )
 from fa_server.services.raw2bmp_service import RawFileManifest, sync_manifest_complete
 from fa_server.storage import TaskRepository
@@ -28,6 +27,7 @@ class SyncServiceTests(unittest.TestCase):
         self.assertEqual(DEFAULT_LOCAL_ROOT, config.local_root)
         self.assertEqual("rsync", config.rsync_command)
         self.assertEqual((".raw", ".bmp"), config.raw_extensions)
+        self.assertFalse(hasattr(config, "idle_timeout_seconds"))
         self.assertTrue(config.purge_enabled)
         self.assertEqual(10, config.purge_max_folders)
         self.assertEqual(86400, config.purge_interval_seconds)
@@ -44,6 +44,7 @@ class SyncServiceTests(unittest.TestCase):
 
         self.assertEqual("bmp_test", request.folder_name)
         self.assertEqual("C:/msys64/usr/bin/rsync.exe", request.rsync_command)
+        self.assertFalse(hasattr(request, "idle_timeout_seconds"))
 
     def test_msys_destination_uses_drive_mount_path(self):
         destination = format_rsync_destination(
@@ -210,6 +211,32 @@ class SyncServiceTests(unittest.TestCase):
             (root / "test_002T.bmp").write_bytes(b"bmp")
             self.assertTrue(sync_manifest_complete(root, manifest))
 
+    def test_sync_manifest_complete_checks_source_names_when_conversion_disabled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = RawFileManifest(
+                path=root / "raw_file_manifest.xml",
+                expected_files=("test_001.raw", "test_002.raw"),
+            )
+            (root / "test_001.raw").write_bytes(b"raw")
+
+            self.assertFalse(
+                sync_manifest_complete(
+                    root,
+                    manifest,
+                    transcode_rename_enabled=False,
+                )
+            )
+
+            (root / "test_002.raw").write_bytes(b"raw")
+            self.assertTrue(
+                sync_manifest_complete(
+                    root,
+                    manifest,
+                    transcode_rename_enabled=False,
+                )
+            )
+
     def test_required_sync_file_count_reads_manifest(self):
         import tempfile
 
@@ -222,16 +249,6 @@ class SyncServiceTests(unittest.TestCase):
             )
 
             self.assertEqual(2, required_sync_file_count(root))
-
-    def test_sync_completion_status_marks_incomplete_manifest_partial(self):
-        manifest = RawFileManifest(
-            path=Path("raw_file_manifest.xml"),
-            expected_files=("test_001.raw", "test_002.raw"),
-        )
-
-        self.assertEqual("completed", sync_completion_status(manifest, 2))
-        self.assertEqual("partially_completed", sync_completion_status(manifest, 1))
-        self.assertEqual("completed", sync_completion_status(None, 1))
 
     def test_resynced_raw_is_removed_using_recorded_final_bmp_path(self):
         class FakeRaw2BmpSession:
@@ -433,6 +450,71 @@ class SyncServiceTests(unittest.TestCase):
                 {"pending": 1},
                 repository.count_images_by_sr_status("production_folder"),
             )
+
+    def test_run_job_waits_for_manifest_without_idle_timeout(self):
+        class FakeRaw2BmpSession:
+            def transcode_and_rename_raw(self, raw_path: Path) -> Path:
+                raise AssertionError(f"conversion should be disabled: {raw_path}")
+
+            def finish(self) -> None:
+                return None
+
+        class FakeRaw2BmpService:
+            def create_task_session(self, folder: Path) -> FakeRaw2BmpSession:
+                del folder
+                return FakeRaw2BmpSession()
+
+        class DelayedManifestSyncService(SyncService):
+            def __init__(self, config, raw2bmp_service):
+                super().__init__(config, raw2bmp_service)
+                self.sync_calls = 0
+
+            def _prefetch_xml_configuration(self, job_id, request, local_dir):
+                del job_id, request, local_dir
+
+            def _run_rsync_once(
+                self,
+                request,
+                local_dir,
+                progress_callback=None,
+            ):
+                del request
+                self.sync_calls += 1
+                if self.sync_calls == 1:
+                    return
+                (local_dir / "raw_file_manifest.xml").write_text(
+                    '<manifest><file name="source.raw" /></manifest>',
+                    encoding="utf-8",
+                )
+                (local_dir / "source.raw").write_bytes(b"raw")
+                assert progress_callback is not None
+                progress_callback()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_root = Path(temp_dir)
+            service = DelayedManifestSyncService(
+                AppConfig(local_root=local_root),
+                FakeRaw2BmpService(),
+            )
+            request = service.build_request(
+                {
+                    "folder_name": "production_folder",
+                    "local_root": str(local_root),
+                    "enable_transcode_rename": False,
+                    "poll_interval_seconds": 1,
+                }
+            )
+            job_id, _ = service.create_job(request)
+
+            with patch("fa_server.services.sync_service.time.sleep") as sleep:
+                service.run_job(job_id, request)
+
+            repository = TaskRepository(
+                local_root / "production_folder" / "tasks.sqlite3"
+            )
+            self.assertEqual(2, service.sync_calls)
+            sleep.assert_called_once_with(1)
+            self.assertEqual("completed", repository.get_sync_job(job_id)["status"])
 
     def test_active_sync_scan_does_not_reprocess_seen_raw_file(self):
         class FakeRaw2BmpSession:

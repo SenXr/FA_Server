@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fa_server.config import AppConfig
+from fa_server.services.raw2bmp_service import read_raw_manifest
 from ep5_enhancement import UNetGANConfig
 from ep5_enhancement import batch_process as batch_process_ep5
 from ep5_enhancement import load_model as load_ep5_model
@@ -32,7 +33,6 @@ class SuperResolutionTaskRequest:
     model_path: Path = DEFAULT_SR_MODEL_PATH
     batch_size: int = 3
     process_partial_batch: bool = True
-    idle_timeout_seconds: int = 600
     poll_interval_seconds: int = 10
     output_dirname: str = "Super_Resolution"
     database_filename: str = "tasks.sqlite3"
@@ -83,12 +83,10 @@ class SuperResolutionService:
         model_runner: ModelRunner | None = None,
         *,
         sleep_func=time.sleep,
-        monotonic_func=time.monotonic,
     ):
         self.config = config
         self.model_runner = model_runner or ModelRunner()
         self.sleep_func = sleep_func
-        self.monotonic_func = monotonic_func
 
     def build_request(self, payload: dict) -> SuperResolutionTaskRequest:
         folder_name = validate_folder_name(payload.get("folder_name", ""))
@@ -110,12 +108,6 @@ class SuperResolutionService:
             model_path=model_path.resolve(),
             batch_size=batch_size,
             process_partial_batch=bool(payload.get("process_partial_batch", True)),
-            idle_timeout_seconds=int(
-                payload.get(
-                    "idle_timeout_seconds",
-                    self.config.super_resolution_idle_timeout_seconds,
-                )
-            ),
             poll_interval_seconds=int(
                 payload.get(
                     "poll_interval_seconds",
@@ -144,7 +136,6 @@ class SuperResolutionService:
             model_path=request.model_path,
             batch_size=request.batch_size,
             process_partial_batch=request.process_partial_batch,
-            idle_timeout_seconds=request.idle_timeout_seconds,
             poll_interval_seconds=request.poll_interval_seconds,
         )
         return job_id, db_path
@@ -158,7 +149,6 @@ class SuperResolutionService:
         output_dir = folder_dir(request.local_root, request.folder_name) / request.output_dirname
         output_dir.mkdir(parents=True, exist_ok=True)
         processed_count = 0
-        last_activity_at = self.monotonic_func()
 
         repository.update_sr_job(job_id, status="running", started_at=utc_now())
         try:
@@ -173,7 +163,6 @@ class SuperResolutionService:
                         repository,
                         request.model_path,
                     )
-                    last_activity_at = self.monotonic_func()
                     repository.update_sr_job(
                         job_id,
                         status="running",
@@ -181,25 +170,14 @@ class SuperResolutionService:
                     )
                     continue
 
-                if super_resolution_task_table_complete(repository, request.folder_name):
-                    repository.update_sr_job(
-                        job_id,
-                        status="completed",
-                        finished_at=utc_now(),
-                        processed_file_count=processed_count,
-                    )
-                    return
-
-                if (
-                    self.monotonic_func() - last_activity_at
-                    >= request.idle_timeout_seconds
+                if super_resolution_task_table_complete(
+                    repository,
+                    request.folder_name,
+                    folder_dir(request.local_root, request.folder_name),
                 ):
                     repository.update_sr_job(
                         job_id,
-                        status=super_resolution_completion_status(
-                            repository,
-                            request.folder_name,
-                        ),
+                        status="completed",
                         finished_at=utc_now(),
                         processed_file_count=processed_count,
                     )
@@ -285,23 +263,18 @@ def validate_batch_result(
 def super_resolution_task_table_complete(
     repository: TaskRepository,
     folder_name: str,
+    task_dir: Path,
 ) -> bool:
+    manifest = read_raw_manifest(task_dir)
+    if manifest is None or manifest.expected_count == 0:
+        return False
     counts = repository.count_images_by_sr_status(folder_name)
     if not counts:
         return False
     if repository.has_active_sync_job(folder_name):
         return False
-    return counts.get("done", 0) > 0 and not any(
+    return counts.get("done", 0) == manifest.expected_count and not any(
         count
         for status, count in counts.items()
         if status != "done"
     )
-
-
-def super_resolution_completion_status(
-    repository: TaskRepository,
-    folder_name: str,
-) -> str:
-    if super_resolution_task_table_complete(repository, folder_name):
-        return "completed"
-    return "partially_completed"

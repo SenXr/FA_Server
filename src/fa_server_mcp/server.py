@@ -8,7 +8,6 @@ from typing import Any, TextIO
 
 from .client import FaServerApiError, FaServerClient
 
-
 JSONRPC_VERSION = "2.0"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "fa-server"
@@ -32,9 +31,7 @@ class McpConfig:
                 "FA_MCP_API_KEY",
                 os.getenv("FA_API_KEY", "dev-api-key"),
             ),
-            timeout_seconds=float(
-                os.getenv("FA_MCP_HTTP_TIMEOUT_SECONDS", "30")
-            ),
+            timeout_seconds=float(os.getenv("FA_MCP_HTTP_TIMEOUT_SECONDS", "30")),
         )
 
 
@@ -206,7 +203,6 @@ def _sync_task_schema() -> dict[str, Any]:
             "local_root": {"type": "string"},
             "rsync": {"type": "string"},
             "enable_transcode_rename": {"type": "boolean"},
-            "idle_timeout_seconds": {"type": "integer", "minimum": 0},
             "poll_interval_seconds": {"type": "integer", "minimum": 0},
             "raw_extensions": {
                 "type": "array",
@@ -233,7 +229,6 @@ def _super_resolution_schema() -> dict[str, Any]:
             },
             "batch_size": {"type": "integer", "minimum": 1},
             "process_partial_batch": {"type": "boolean"},
-            "idle_timeout_seconds": {"type": "integer", "minimum": 0},
             "poll_interval_seconds": {"type": "integer", "minimum": 0},
             "output_dirname": {"type": "string"},
             "database_filename": {"type": "string"},
@@ -287,11 +282,7 @@ def _optional_string(arguments: dict[str, Any], key: str) -> str | None:
 
 def _without_keys(arguments: dict[str, Any], *keys: str) -> dict[str, Any]:
     excluded = set(keys)
-    return {
-        key: value
-        for key, value in arguments.items()
-        if key not in excluded
-    }
+    return {key: value for key, value in arguments.items() if key not in excluded}
 
 
 def _tool_result(
@@ -355,8 +346,7 @@ def run_stdio(
 
         if response is not None:
             output_stream.write(
-                json.dumps(response, ensure_ascii=False, separators=(",", ":"))
-                + "\n"
+                json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n"
             )
             output_stream.flush()
 

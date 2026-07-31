@@ -14,7 +14,6 @@ Optional:
 - `local_root`
 - `rsync`
 - `enable_transcode_rename`
-- `idle_timeout_seconds`
 - `poll_interval_seconds`
 - `raw_extensions`
 - `rsync_timeout_seconds`
@@ -55,7 +54,6 @@ Optional:
 - `model_path`: absolute path on the FA Server host.
 - `batch_size`
 - `process_partial_batch`
-- `idle_timeout_seconds`
 - `poll_interval_seconds`
 - `output_dirname`
 - `database_filename`
@@ -85,14 +83,12 @@ Important response fields:
 
 Sync terminal states:
 
-- `completed`: expected data is available or the fallback completion rule was met.
-- `partially_completed`: the task ended but manifest and synchronized counts differ.
+- `completed`: all data expected by the XML manifest is available.
 - `failed`: execution failed; inspect `error_message`.
 
 Super-resolution terminal states:
 
-- `completed`: the task has stopped normally.
-- `partially_completed`: idle timeout ended the task while images remain unfinished.
+- `completed`: all images expected by the XML manifest are processed.
 - `failed`: inference or task execution failed.
 
 Image counts may contain:
@@ -125,7 +121,7 @@ health_check
   -> get_sync_job
   -> completed?
        yes -> create_super_resolution_task
-       no  -> report partial/failed state
+       no  -> report running/failed state
   -> get_super_resolution_job
   -> report final status and image counts
 ```

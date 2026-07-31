@@ -85,11 +85,11 @@ raw_test
 queued
 running
 completed
-partially_completed
 failed
 ```
 
-`partially_completed` 表示任务已结束，但根据 `raw_file_manifest.xml` 解析出的需同步数量大于实际已同步数量。常见场景是：源端文件缺失或长时间未产生新文件，任务触发空闲超时后结束。
+同步任务仅在 `raw_file_manifest.xml` 描述的目标文件全部同步并完成必要处理后
+进入 `completed`。XML 尚未出现或目标数量尚未满足时保持 `running`。
 
 超分辨任务状态：
 
@@ -97,14 +97,12 @@ failed
 queued
 running
 completed
-partially_completed
 failed
 ```
 
-超分辨任务只有在全部图片状态均为 `done` 且同步任务已停止时才会返回
-`completed`。达到空闲超时后仍存在 `pending_conversion`、`blocked`、
-`pending`、`processing` 或 `failed` 图片时，任务结束为
-`partially_completed`，具体数量通过 `image_counts` 返回。
+超分辨任务只有在 XML 预计数量与 `done` 数量一致、没有其他未完成图片状态，
+且同步任务已停止时才会返回 `completed`。否则任务保持 `running` 并按
+`poll_interval_seconds` 持续检查增量数据。
 
 ### SQLite 任务表
 
@@ -161,7 +159,6 @@ POST /api/v1/sync/tasks/{folder_name}
 | `local_root` | string | `FA_LOCAL_ROOT` | 本地数据根目录 |
 | `rsync` | string | `FA_RSYNC` | rsync 命令或绝对路径 |
 | `enable_transcode_rename` | boolean | `true` | 是否启用 RAW 转 BMP 与重命名 |
-| `idle_timeout_seconds` | integer | `600` | 无新增文件后的结束超时时间 |
 | `poll_interval_seconds` | integer | `30` | 同步轮询间隔 |
 | `raw_extensions` | string[] | `[".raw"]` | 待发现的数据扩展名 |
 | `rsync_timeout_seconds` | integer | `3600` | 单次 rsync 命令超时 |
@@ -175,7 +172,6 @@ POST /api/v1/sync/tasks/{folder_name}
   "local_root": "D:/Agent/ChatAgent/PWQ/FA_Server/data/rsync_data",
   "rsync": "rsync",
   "enable_transcode_rename": true,
-  "idle_timeout_seconds": 600,
   "poll_interval_seconds": 30
 }
 ```
@@ -244,16 +240,15 @@ GET /api/v1/sync/jobs/{job_id}
   "job_id": "3efb01d94fd04590bb0558f6f914a2d1",
   "folder_name": "raw_test",
   "job_kind": "initial",
-  "status": "partially_completed",
+  "status": "completed",
   "remote_url": "rsync://admin@172.24.22.29:8873/data/raw_test/",
   "local_dir": "D:\\Agent\\ChatAgent\\PWQ\\FA_Server\\data\\rsync_data\\raw_test",
   "required_file_count": 100,
-  "synced_file_count": 99,
+  "synced_file_count": 100,
   "image_counts": {
-    "pending": 99
+    "pending": 100
   },
   "transcode_rename_enabled": 1,
-  "idle_timeout_seconds": 600,
   "poll_interval_seconds": 30,
   "created_at": "2026-07-13T07:23:12.624171+00:00",
   "started_at": "2026-07-13T07:23:12.635281+00:00",
@@ -270,8 +265,8 @@ GET /api/v1/sync/jobs/{job_id}
 | `required_file_count` | 从 `raw_file_manifest.xml` 解析出的需同步文件数。没有 manifest 时为 `null` |
 | `synced_file_count` | 当前任务发现并写入任务表的数据文件数 |
 | `image_counts` | 按超分辨状态统计的图片任务数量 |
-| `status=completed` | manifest 已满足，或无 manifest 时空闲超时结束 |
-| `status=partially_completed` | 有 manifest，且空闲超时结束时已同步数小于需同步数 |
+| `status=completed` | XML manifest 描述的目标已全部同步并处理完成 |
+| `status=running` | XML 尚未出现，或预计目标尚未全部满足 |
 
 CMD 示例：
 
@@ -303,7 +298,6 @@ POST /api/v1/super-resolution/tasks
 | `model_path` | string | 项目默认模型 | 超分辨模型的绝对路径，传给 `ep5_enhancement.load_model()` |
 | `batch_size` | integer | `3` | 每批传入模型的图片数量 |
 | `process_partial_batch` | boolean | `true` | 是否处理不足一个 batch 的尾批 |
-| `idle_timeout_seconds` | integer | `600` | 无新增可处理图片后的结束超时时间 |
 | `poll_interval_seconds` | integer | `10` | 扫描任务表间隔 |
 | `output_dirname` | string | `Super_Resolution` | 输出子目录名称 |
 | `database_filename` | string | `tasks.sqlite3` | SQLite 文件名 |
@@ -317,7 +311,6 @@ POST /api/v1/super-resolution/tasks
   "model_path": "D:/models/super_resolution/best_model.pth",
   "batch_size": 3,
   "process_partial_batch": true,
-  "idle_timeout_seconds": 600,
   "poll_interval_seconds": 10,
   "output_dirname": "Super_Resolution"
 }
@@ -371,7 +364,6 @@ GET /api/v1/super-resolution/tasks/{job_id}
   "image_counts": {
     "done": 99
   },
-  "idle_timeout_seconds": 600,
   "poll_interval_seconds": 10,
   "created_at": "2026-07-13T07:30:18.138889+00:00",
   "started_at": "2026-07-13T07:30:18.150016+00:00",
@@ -380,9 +372,9 @@ GET /api/v1/super-resolution/tasks/{job_id}
 }
 ```
 
-`status=partially_completed` 表示任务已经停止等待，但仍有图片未成功完成。
-调用方应检查 `image_counts`，处理其中的 `blocked`、`pending`、
-`processing` 或 `failed` 数据后再决定是否重试。
+任务保持 `running` 时，调用方应检查 `image_counts` 中的 `blocked`、
+`pending_conversion`、`pending`、`processing` 或 `failed`，定位尚未达到
+XML 目标的原因。
 
 CMD 示例：
 
@@ -429,6 +421,5 @@ curl -X GET "http://127.0.0.1:5000/api/v1/super-resolution/tasks/640944458d584de
 1. 调用 `POST /api/v1/sync/tasks/{folder_name}` 创建同步任务。
 2. 轮询 `GET /api/v1/sync/jobs/{job_id}`。
 3. 同步任务为 `completed` 时，创建超分辨任务。
-4. 同步任务为 `partially_completed` 时，先检查缺失文件是否符合预期，再决定是否创建超分辨任务。
-5. 调用 `POST /api/v1/super-resolution/tasks` 创建超分辨任务。
-6. 轮询 `GET /api/v1/super-resolution/tasks/{job_id}`。
+4. 调用 `POST /api/v1/super-resolution/tasks` 创建超分辨任务。
+5. 轮询 `GET /api/v1/super-resolution/tasks/{job_id}`。

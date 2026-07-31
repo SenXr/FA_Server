@@ -95,7 +95,7 @@ health_check
 
 遇到以下状态时不应继续自动提交后续任务：
 
-- 同步任务为 `partially_completed`。
+- 同步任务仍为 `queued` 或 `running`。
 - 任一任务为 `failed`。
 - 图片状态存在需要人工排查的 `blocked` 或 `failed`。
 - 接口返回 HTTP 409，表示同一文件夹已有重复或活跃任务。

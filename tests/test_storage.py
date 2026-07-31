@@ -74,7 +74,6 @@ class TaskRepositoryTests(unittest.TestCase):
                 remote_url="rsync://host/data/folder/",
                 local_dir=db_path.parent,
                 transcode_rename_enabled=True,
-                idle_timeout_seconds=600,
                 poll_interval_seconds=30,
             )
             repository.update_sync_job("job-1", status="completed")
@@ -86,7 +85,6 @@ class TaskRepositoryTests(unittest.TestCase):
                     remote_url="rsync://host/data/folder/",
                     local_dir=db_path.parent,
                     transcode_rename_enabled=True,
-                    idle_timeout_seconds=600,
                     poll_interval_seconds=30,
                 )
 
@@ -100,7 +98,6 @@ class TaskRepositoryTests(unittest.TestCase):
                 remote_url="rsync://host/data/folder/",
                 local_dir=db_path.parent,
                 transcode_rename_enabled=True,
-                idle_timeout_seconds=600,
                 poll_interval_seconds=30,
             )
             repository.update_sync_job("job-1", status="completed")
@@ -111,7 +108,6 @@ class TaskRepositoryTests(unittest.TestCase):
                 remote_url="rsync://host/data/folder/",
                 local_dir=db_path.parent,
                 transcode_rename_enabled=True,
-                idle_timeout_seconds=600,
                 poll_interval_seconds=30,
                 job_kind="update",
                 allow_existing_folder=True,
@@ -129,7 +125,6 @@ class TaskRepositoryTests(unittest.TestCase):
                 remote_url="rsync://host/data/folder/",
                 local_dir=db_path.parent,
                 transcode_rename_enabled=True,
-                idle_timeout_seconds=600,
                 poll_interval_seconds=30,
             )
 
@@ -140,7 +135,6 @@ class TaskRepositoryTests(unittest.TestCase):
                     remote_url="rsync://host/data/folder/",
                     local_dir=db_path.parent,
                     transcode_rename_enabled=True,
-                    idle_timeout_seconds=600,
                     poll_interval_seconds=30,
                     job_kind="update",
                     allow_existing_folder=True,

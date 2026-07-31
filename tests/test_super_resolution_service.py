@@ -141,6 +141,10 @@ class FakeClock:
             self.on_sleep()
 
 
+class StopWaiting(BaseException):
+    pass
+
+
 class SuperResolutionServiceTests(unittest.TestCase):
     @staticmethod
     def add_pending_images(
@@ -159,6 +163,18 @@ class SuperResolutionServiceTests(unittest.TestCase):
                 transcode_rename_enabled=False,
             )
 
+    @staticmethod
+    def write_manifest(folder: Path, count: int) -> None:
+        files = "".join(
+            f'<file name="{index:05d}.raw" />'
+            for index in range(count)
+        )
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "raw_file_manifest.xml").write_text(
+            f"<manifest>{files}</manifest>",
+            encoding="utf-8",
+        )
+
     def test_build_request_accepts_absolute_model_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir).resolve()
@@ -174,6 +190,7 @@ class SuperResolutionServiceTests(unittest.TestCase):
             )
 
             self.assertEqual(model_path, request.model_path)
+            self.assertFalse(hasattr(request, "idle_timeout_seconds"))
 
     def test_build_request_rejects_relative_model_path(self):
         service = SuperResolutionService(AppConfig())
@@ -189,11 +206,12 @@ class SuperResolutionServiceTests(unittest.TestCase):
     def test_super_resolution_task_table_complete_checks_sqlite_statuses(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            repository = TaskRepository(root / "folder" / "tasks.sqlite3")
+            folder = root / "folder"
+            repository = TaskRepository(folder / "tasks.sqlite3")
             self.assertFalse(
-                super_resolution_task_table_complete(repository, "folder")
+                super_resolution_task_table_complete(repository, "folder", folder)
             )
-            image_path = root / "folder" / "image.bmp"
+            image_path = folder / "image.bmp"
             image_path.parent.mkdir(parents=True, exist_ok=True)
             image_path.write_bytes(b"bmp")
             inserted, image_id = repository.upsert_raw_file(
@@ -204,27 +222,36 @@ class SuperResolutionServiceTests(unittest.TestCase):
             )
             self.assertTrue(inserted)
             self.assertFalse(
-                super_resolution_task_table_complete(repository, "folder")
+                super_resolution_task_table_complete(repository, "folder", folder)
             )
             repository.mark_sr_done(image_id, root / "folder" / "Super_Resolution" / "image_sr.bmp")
+            self.assertFalse(
+                super_resolution_task_table_complete(repository, "folder", folder)
+            )
+
+            (folder / "raw_file_manifest.xml").write_text(
+                '<manifest><file name="image.raw" /></manifest>',
+                encoding="utf-8",
+            )
             self.assertTrue(
-                super_resolution_task_table_complete(repository, "folder")
+                super_resolution_task_table_complete(repository, "folder", folder)
             )
 
     def test_super_resolution_task_table_waits_for_active_sync_job(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            repository = TaskRepository(root / "folder" / "tasks.sqlite3")
+            folder = root / "folder"
+            repository = TaskRepository(folder / "tasks.sqlite3")
             repository.create_sync_job(
                 job_id="sync",
                 folder_name="folder",
                 remote_url="rsync://host/data/folder/",
-                local_dir=root / "folder",
+                local_dir=folder,
                 transcode_rename_enabled=False,
-                idle_timeout_seconds=600,
                 poll_interval_seconds=30,
             )
-            image_path = root / "folder" / "image.bmp"
+            self.write_manifest(folder, 1)
+            image_path = folder / "image.bmp"
             image_path.parent.mkdir(parents=True, exist_ok=True)
             image_path.write_bytes(b"bmp")
             _, image_id = repository.upsert_raw_file(
@@ -236,11 +263,11 @@ class SuperResolutionServiceTests(unittest.TestCase):
             repository.mark_sr_done(image_id, root / "folder" / "Super_Resolution" / "image_sr.bmp")
 
             self.assertFalse(
-                super_resolution_task_table_complete(repository, "folder")
+                super_resolution_task_table_complete(repository, "folder", folder)
             )
             repository.update_sync_job("sync", status="completed")
             self.assertTrue(
-                super_resolution_task_table_complete(repository, "folder")
+                super_resolution_task_table_complete(repository, "folder", folder)
             )
 
     def test_blocked_images_do_not_make_task_table_complete(self):
@@ -258,9 +285,10 @@ class SuperResolutionServiceTests(unittest.TestCase):
                 transcode_rename_enabled=True,
             )
             repository.mark_conversion_failed(image_id, "conversion failed")
+            self.write_manifest(folder, 1)
 
             self.assertFalse(
-                super_resolution_task_table_complete(repository, "folder")
+                super_resolution_task_table_complete(repository, "folder", folder)
             )
 
     def test_model_runner_loads_model_session_once(self):
@@ -399,17 +427,22 @@ class SuperResolutionServiceTests(unittest.TestCase):
                 AppConfig(local_root=root),
                 runner,
                 sleep_func=clock.sleep,
-                monotonic_func=clock.monotonic,
             )
+            self.write_manifest(folder, 65)
+
+            def stop_waiting() -> None:
+                raise StopWaiting()
+
+            clock.on_sleep = stop_waiting
             request = SuperResolutionTaskRequest(
                 folder_name="folder",
                 local_root=root,
                 batch_size=60,
                 process_partial_batch=False,
-                idle_timeout_seconds=0,
             )
             job_id, _ = service.create_job(request)
-            service.run_job(job_id, request)
+            with self.assertRaises(StopWaiting):
+                service.run_job(job_id, request)
 
             self.assertEqual(1, len(runner.calls))
             self.assertEqual(60, len(runner.calls[0]))
@@ -418,7 +451,7 @@ class SuperResolutionServiceTests(unittest.TestCase):
                 repository.count_images_by_sr_status("folder"),
             )
             self.assertEqual(
-                "partially_completed",
+                "running",
                 repository.get_sr_job(job_id)["status"],
             )
             self.assertEqual(
@@ -438,7 +471,6 @@ class SuperResolutionServiceTests(unittest.TestCase):
             request = SuperResolutionTaskRequest(
                 folder_name="folder",
                 local_root=root,
-                idle_timeout_seconds=0,
             )
             job_id, _ = service.create_job(request)
 
@@ -457,6 +489,7 @@ class SuperResolutionServiceTests(unittest.TestCase):
             folder = root / "folder"
             repository = TaskRepository(folder / "tasks.sqlite3")
             self.add_pending_images(repository, folder, 301)
+            self.write_manifest(folder, 301)
             runner = IntegerResultModelRunner()
             service = SuperResolutionService(
                 AppConfig(local_root=root),
@@ -467,7 +500,6 @@ class SuperResolutionServiceTests(unittest.TestCase):
                 local_root=root,
                 batch_size=150,
                 process_partial_batch=True,
-                idle_timeout_seconds=0,
             )
             job_id, _ = service.create_job(request)
 
@@ -498,6 +530,7 @@ class SuperResolutionServiceTests(unittest.TestCase):
             folder = root / "folder"
             repository = TaskRepository(folder / "tasks.sqlite3")
             self.add_pending_images(repository, folder, 3)
+            self.write_manifest(folder, 3)
             service = SuperResolutionService(
                 AppConfig(local_root=root),
                 NoneItemResultModelRunner(),
@@ -507,7 +540,6 @@ class SuperResolutionServiceTests(unittest.TestCase):
                 local_root=root,
                 batch_size=3,
                 process_partial_batch=True,
-                idle_timeout_seconds=0,
             )
             job_id, _ = service.create_job(request)
 
@@ -547,7 +579,6 @@ class SuperResolutionServiceTests(unittest.TestCase):
                 local_root=root,
                 batch_size=150,
                 process_partial_batch=True,
-                idle_timeout_seconds=0,
             )
             job_id, _ = service.create_job(request)
 
@@ -585,18 +616,17 @@ class SuperResolutionServiceTests(unittest.TestCase):
 
             runner = RecordingModelRunner()
             clock = FakeClock()
+            self.write_manifest(folder, 5)
             service = SuperResolutionService(
                 AppConfig(local_root=root),
                 runner,
                 sleep_func=clock.sleep,
-                monotonic_func=clock.monotonic,
             )
             request = SuperResolutionTaskRequest(
                 folder_name="folder",
                 local_root=root,
                 batch_size=60,
                 process_partial_batch=True,
-                idle_timeout_seconds=0,
             )
             job_id, _ = service.create_job(request)
             service.run_job(job_id, request)
@@ -607,7 +637,7 @@ class SuperResolutionServiceTests(unittest.TestCase):
             self.assertEqual("completed", repository.get_sr_job(job_id)["status"])
             self.assertTrue(runner.loaded)
 
-    def test_waits_for_incremental_images_before_timeout(self):
+    def test_waits_for_incremental_images_until_manifest_is_complete(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             folder = root / "folder"
@@ -615,6 +645,7 @@ class SuperResolutionServiceTests(unittest.TestCase):
             repository = TaskRepository(db_path)
             runner = RecordingModelRunner()
             clock = FakeClock()
+            self.write_manifest(folder, 3)
 
             inserted = False
 
@@ -639,14 +670,12 @@ class SuperResolutionServiceTests(unittest.TestCase):
                 AppConfig(local_root=root),
                 runner,
                 sleep_func=clock.sleep,
-                monotonic_func=clock.monotonic,
             )
             request = SuperResolutionTaskRequest(
                 folder_name="folder",
                 local_root=root,
                 batch_size=3,
                 process_partial_batch=True,
-                idle_timeout_seconds=10,
                 poll_interval_seconds=10,
             )
             job_id, _ = service.create_job(request)

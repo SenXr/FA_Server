@@ -166,7 +166,6 @@ class TaskRepository:
         remote_url: str,
         local_dir: Path,
         transcode_rename_enabled: bool,
-        idle_timeout_seconds: int,
         poll_interval_seconds: int,
         job_kind: str = "initial",
         allow_existing_folder: bool = False,
@@ -215,7 +214,7 @@ class TaskRepository:
                     transcode_rename_enabled, status, idle_timeout_seconds,
                     poll_interval_seconds, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)
                 """,
                 (
                     job_id,
@@ -224,7 +223,6 @@ class TaskRepository:
                     str(local_dir),
                     job_kind,
                     int(transcode_rename_enabled),
-                    idle_timeout_seconds,
                     poll_interval_seconds,
                     now,
                 ),
@@ -234,7 +232,10 @@ class TaskRepository:
         self._update("sync_jobs", "job_id", job_id, fields)
 
     def get_sync_job(self, job_id: str) -> dict | None:
-        return self._get_by_id("sync_jobs", "job_id", job_id)
+        row = self._get_by_id("sync_jobs", "job_id", job_id)
+        if row is not None:
+            row.pop("idle_timeout_seconds", None)
+        return row
 
     def has_active_sync_job(self, folder_name: str) -> bool:
         with self.connect() as conn:
@@ -258,7 +259,6 @@ class TaskRepository:
         model_path: Path,
         batch_size: int,
         process_partial_batch: bool,
-        idle_timeout_seconds: int = 600,
         poll_interval_seconds: int = 10,
     ) -> None:
         with self.connect() as conn:
@@ -286,7 +286,7 @@ class TaskRepository:
                     process_partial_batch, idle_timeout_seconds,
                     poll_interval_seconds, status, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'queued', ?)
                 """,
                 (
                     job_id,
@@ -295,7 +295,6 @@ class TaskRepository:
                     str(model_path),
                     batch_size,
                     int(process_partial_batch),
-                    idle_timeout_seconds,
                     poll_interval_seconds,
                     utc_now(),
                 ),
@@ -305,7 +304,10 @@ class TaskRepository:
         self._update("sr_jobs", "job_id", job_id, fields)
 
     def get_sr_job(self, job_id: str) -> dict | None:
-        return self._get_by_id("sr_jobs", "job_id", job_id)
+        row = self._get_by_id("sr_jobs", "job_id", job_id)
+        if row is not None:
+            row.pop("idle_timeout_seconds", None)
+        return row
 
     def upsert_raw_file(
         self,

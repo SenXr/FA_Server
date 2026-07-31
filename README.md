@@ -22,12 +22,11 @@ FA Server 是一个基于 Flask 的文件夹级任务服务，用于在一台服
 - 同步服务：调用本机 `rsync` 从远端拉取指定文件夹数据。
 - 流水线处理：批量同步前优先获取 XML 配置；长时间 rsync 运行期间，持续发现已落盘文件并执行 RAW 处理。
 - RAW 处理：同步后可默认触发 RAW 转 BMP 与重命名流程。
-- 任务完成：优先根据 `raw_file_manifest.xml` 判断是否全部完成；若长时间无新增文件，则按超时兜底结束。
-- 部分完成：若超时结束时已同步数小于 manifest 需同步数，同步任务状态为 `partially_completed`。
+- 任务完成：根据 `raw_file_manifest.xml` 判断预计文件是否全部同步并处理完成。
 - 超分辨服务：读取任务目录 SQLite 中的待处理图片，以批次方式调用模型推理。
 - 模型加载：超分辨模型在服务进程内只加载一次。
 - 内存控制：rsync 输出不驻留内存，RAW 明细及时释放，模型推理串行执行。
-- 完成状态：超分辨空闲超时时仍有未完成图片时返回 `partially_completed`。
+- 完成状态：超分辨完成数量达到 XML 预计数量后返回 `completed`，否则持续等待增量。
 - 清理服务：服务启动时检查一次数据目录，之后默认每天检查一次，保留最新的 10 个任务文件夹。
 - 离线 Swagger：`/docs` 使用本地静态资源，不依赖公网 CDN。
 
@@ -111,7 +110,6 @@ FA_DEBUG=false
 同步任务相关：
 
 ```text
-FA_IDLE_TIMEOUT_SECONDS=600
 FA_POLL_INTERVAL_SECONDS=30
 FA_RSYNC_TIMEOUT_SECONDS=3600
 FA_RAW_EXTENSIONS=.raw,.bmp
@@ -122,7 +120,6 @@ FA_RAW_EXTENSIONS=.raw,.bmp
 ```text
 FA_SR_BATCH_SIZE=3
 FA_SR_POLL_INTERVAL_SECONDS=10
-FA_SR_IDLE_TIMEOUT_SECONDS=600
 FA_SR_OUTPUT_DIRNAME=Super_Resolution
 ```
 

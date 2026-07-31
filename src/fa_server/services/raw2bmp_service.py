@@ -147,9 +147,26 @@ def read_raw_manifest(folder: Path) -> RawFileManifest | None:
     return RawFileManifest(path=manifest_path, expected_files=tuple(file_names))
 
 
-def sync_manifest_complete(root: Path, manifest: RawFileManifest) -> bool:
+def sync_manifest_complete(
+    root: Path,
+    manifest: RawFileManifest,
+    *,
+    transcode_rename_enabled: bool = True,
+) -> bool:
     if manifest.expected_count == 0:
         return False
+    if not transcode_rename_enabled:
+        existing_names = {
+            path.name
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+        expected_names = {
+            Path(file_name).name
+            for file_name in manifest.expected_files
+        }
+        return expected_names.issubset(existing_names)
+
     existing = {
         path.name
         for path in root.glob("*.bmp")
