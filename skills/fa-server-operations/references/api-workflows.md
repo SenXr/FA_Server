@@ -84,11 +84,15 @@ Important response fields:
 Sync terminal states:
 
 - `completed`: all data expected by the XML manifest is available.
+- `timed_out`: the XML target is unmet and no new input was discovered before
+  the server's internal stall timeout; inspect `error_message`.
 - `failed`: execution failed; inspect `error_message`.
 
 Super-resolution terminal states:
 
 - `completed`: all images expected by the XML manifest are processed.
+- `timed_out`: the XML target is unmet and no batch completed before the
+  server's internal stall timeout; inspect `image_counts` and `error_message`.
 - `failed`: inference or task execution failed.
 
 Image counts may contain:
@@ -121,7 +125,7 @@ health_check
   -> get_sync_job
   -> completed?
        yes -> create_super_resolution_task
-       no  -> report running/failed state
+       no  -> report running/timed_out/failed state
   -> get_super_resolution_job
   -> report final status and image counts
 ```

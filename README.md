@@ -22,7 +22,7 @@ FA Server 是一个基于 Flask 的文件夹级任务服务，用于在一台服
 - 同步服务：调用本机 `rsync` 从远端拉取指定文件夹数据。
 - 流水线处理：批量同步前优先获取 XML 配置；长时间 rsync 运行期间，持续发现已落盘文件并执行 RAW 处理。
 - RAW 处理：同步后可默认触发 RAW 转 BMP 与重命名流程。
-- 任务完成：根据 `raw_file_manifest.xml` 判断预计文件是否全部同步并处理完成。
+- 任务完成：根据 `raw_file_manifest.xml` 判断预计文件是否全部同步并处理完成；长时间无进展则以 `timed_out` 结束，避免任务无限等待。
 - 超分辨服务：读取任务目录 SQLite 中的待处理图片，以批次方式调用模型推理。
 - 模型加载：超分辨模型在服务进程内只加载一次。
 - 内存控制：rsync 输出不驻留内存，RAW 明细及时释放，模型推理串行执行。
@@ -112,8 +112,11 @@ FA_DEBUG=false
 ```text
 FA_POLL_INTERVAL_SECONDS=30
 FA_RSYNC_TIMEOUT_SECONDS=3600
+FA_TASK_STALL_TIMEOUT_SECONDS=3600
 FA_RAW_EXTENSIONS=.raw,.bmp
 ```
+
+`FA_TASK_STALL_TIMEOUT_SECONDS` 是服务内部的无进展超时，默认 3600 秒，不属于接口请求参数。同步任务以最近发现新文件的时间计时，超分辨任务以最近成功处理批次的时间计时。达到 XML 目标时仍返回 `completed`；未达到目标且持续无进展时返回 `timed_out`。
 
 超分辨任务相关：
 

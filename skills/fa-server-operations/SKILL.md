@@ -21,6 +21,7 @@ explicitly requests local maintenance.
    stage depends on sync completion.
 5. Interpret the sync terminal state:
    - `completed`: continue when super-resolution was requested.
+   - `timed_out`: stop and report the unmet XML target and `error_message`.
    - `failed`: stop and report `error_message`.
 6. Call `create_super_resolution_task` only after the relevant inputs are ready.
    Pass `model_path` when the user specifies a production model.
@@ -34,6 +35,8 @@ explicitly requests local maintenance.
 - When a tool returns 409, report `existing_job_id` and inspect that job when
   enough query context is available.
 - Treat `queued` and `running` as non-terminal states.
+- Treat `timed_out` as terminal but unsuccessful. Do not continue to the next
+  processing stage automatically.
 - Do not infer super-resolution output names from input names. The service
   records completion against input images.
 - Ask before repeatedly polling a task unless the user requested monitoring.

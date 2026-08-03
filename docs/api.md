@@ -85,11 +85,13 @@ raw_test
 queued
 running
 completed
+timed_out
 failed
 ```
 
 同步任务仅在 `raw_file_manifest.xml` 描述的目标文件全部同步并完成必要处理后
-进入 `completed`。XML 尚未出现或目标数量尚未满足时保持 `running`。
+进入 `completed`。XML 尚未出现或目标数量尚未满足时保持 `running`；持续没有发现
+新文件并超过内部无进展超时后进入 `timed_out`。
 
 超分辨任务状态：
 
@@ -97,12 +99,17 @@ failed
 queued
 running
 completed
+timed_out
 failed
 ```
 
 超分辨任务只有在 XML 预计数量与 `done` 数量一致、没有其他未完成图片状态，
 且同步任务已停止时才会返回 `completed`。否则任务保持 `running` 并按
-`poll_interval_seconds` 持续检查增量数据。
+`poll_interval_seconds` 持续检查增量数据；持续没有成功处理新批次并超过内部无进展
+超时后进入 `timed_out`。
+
+内部无进展超时由环境变量 `FA_TASK_STALL_TIMEOUT_SECONDS` 配置，默认 3600 秒。
+该配置不开放为任务请求字段，避免不同调用方改变服务的资源保护策略。
 
 ### SQLite 任务表
 
@@ -267,6 +274,7 @@ GET /api/v1/sync/jobs/{job_id}
 | `image_counts` | 按超分辨状态统计的图片任务数量 |
 | `status=completed` | XML manifest 描述的目标已全部同步并处理完成 |
 | `status=running` | XML 尚未出现，或预计目标尚未全部满足 |
+| `status=timed_out` | 长时间没有发现新文件且仍未达到 XML 目标；应检查上游数据、XML 和 `error_message` |
 
 CMD 示例：
 
@@ -375,6 +383,9 @@ GET /api/v1/super-resolution/tasks/{job_id}
 任务保持 `running` 时，调用方应检查 `image_counts` 中的 `blocked`、
 `pending_conversion`、`pending`、`processing` 或 `failed`，定位尚未达到
 XML 目标的原因。
+
+任务为 `timed_out` 时不表示处理成功。调用方应根据 `error_message`、XML 预计数量和
+`image_counts` 排查缺失输入；问题修复后可重新提交任务继续处理未完成图片。
 
 CMD 示例：
 
