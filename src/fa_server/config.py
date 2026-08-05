@@ -19,6 +19,7 @@ class AppConfig:
     local_root: Path = DEFAULT_LOCAL_ROOT
     rsync_command: str = "rsync"
     poll_interval_seconds: int = 30
+    task_stall_timeout_seconds: int = 3600
     raw_extensions: tuple[str, ...] = (".raw", ".bmp")
     rsync_timeout_seconds: int = 3600
     database_filename: str = "tasks.sqlite3"
@@ -44,6 +45,9 @@ class AppConfig:
             ),
             rsync_command=os.getenv("FA_RSYNC", "rsync"),
             poll_interval_seconds=int(os.getenv("FA_POLL_INTERVAL_SECONDS", "30")),
+            task_stall_timeout_seconds=int(
+                os.getenv("FA_TASK_STALL_TIMEOUT_SECONDS", "3600")
+            ),
             raw_extensions=tuple(
                 ext.strip().lower() for ext in raw_extensions.split(",") if ext.strip()
             ),

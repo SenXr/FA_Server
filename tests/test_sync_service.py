@@ -11,6 +11,7 @@ import bootstrap
 from fa_server.config import AppConfig, DEFAULT_LOCAL_ROOT, DEFAULT_REMOTE_BASE
 from fa_server.services.sync_service import (
     SyncService,
+    TaskStallTimeout,
     format_rsync_destination,
     is_msys_rsync,
     required_sync_file_count,
@@ -28,6 +29,7 @@ class SyncServiceTests(unittest.TestCase):
         self.assertEqual("rsync", config.rsync_command)
         self.assertEqual((".raw", ".bmp"), config.raw_extensions)
         self.assertFalse(hasattr(config, "idle_timeout_seconds"))
+        self.assertEqual(3600, config.task_stall_timeout_seconds)
         self.assertTrue(config.purge_enabled)
         self.assertEqual(10, config.purge_max_folders)
         self.assertEqual(86400, config.purge_interval_seconds)
@@ -118,6 +120,40 @@ class SyncServiceTests(unittest.TestCase):
 
         callback.assert_called_once()
         sleep.assert_called_once()
+
+    @patch("fa_server.services.sync_service.subprocess.Popen")
+    @patch("fa_server.services.sync_service.resolve_rsync")
+    def test_stall_timeout_stops_active_rsync_process(
+        self,
+        resolve_rsync,
+        popen,
+    ):
+        resolve_rsync.return_value = "rsync"
+        process = MagicMock()
+        process.poll.side_effect = [None, None]
+        process.wait.return_value = -1
+        popen.return_value = process
+        service = SyncService(AppConfig())
+        request = service.build_request(
+            {
+                "folder_name": "production_folder",
+                "remote_base": "rsync://host/data",
+                "local_root": "D:/tmp/fa",
+                "rsync": "rsync",
+            }
+        )
+
+        with self.assertRaises(TaskStallTimeout):
+            service._run_rsync_once(
+                request,
+                Path("D:/tmp/fa/production_folder"),
+                progress_callback=MagicMock(
+                    side_effect=TaskStallTimeout("stalled")
+                ),
+            )
+
+        process.kill.assert_called_once_with()
+        process.wait.assert_called_once_with()
 
     @patch("fa_server.services.sync_service.subprocess.run")
     @patch("fa_server.services.sync_service.resolve_rsync")
@@ -514,6 +550,124 @@ class SyncServiceTests(unittest.TestCase):
             )
             self.assertEqual(2, service.sync_calls)
             sleep.assert_called_once_with(1)
+            self.assertEqual("completed", repository.get_sync_job(job_id)["status"])
+
+    def test_run_job_ends_as_timed_out_after_internal_stall_timeout(self):
+        class FakeRaw2BmpSession:
+            def finish(self) -> None:
+                return None
+
+        class FakeRaw2BmpService:
+            def create_task_session(self, folder: Path) -> FakeRaw2BmpSession:
+                del folder
+                return FakeRaw2BmpSession()
+
+        class EmptySyncService(SyncService):
+            def _prefetch_xml_configuration(self, job_id, request, local_dir):
+                del job_id, request, local_dir
+
+            def _run_rsync_once(
+                self,
+                request,
+                local_dir,
+                progress_callback=None,
+            ):
+                del request, local_dir, progress_callback
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_root = Path(temp_dir)
+            service = EmptySyncService(
+                AppConfig(
+                    local_root=local_root,
+                    task_stall_timeout_seconds=10,
+                ),
+                FakeRaw2BmpService(),
+            )
+            request = service.build_request(
+                {
+                    "folder_name": "production_folder",
+                    "local_root": str(local_root),
+                    "enable_transcode_rename": False,
+                }
+            )
+            job_id, _ = service.create_job(request)
+
+            with patch(
+                "fa_server.services.sync_service.time.monotonic",
+                side_effect=[0.0, 10.0],
+            ):
+                service.run_job(job_id, request)
+
+            repository = TaskRepository(
+                local_root / "production_folder" / "tasks.sqlite3"
+            )
+            job = repository.get_sync_job(job_id)
+            assert job is not None
+            self.assertEqual("timed_out", job["status"])
+            self.assertIsNotNone(job["finished_at"])
+            self.assertIn("XML target", job["error_message"])
+
+    def test_manifest_completion_takes_precedence_over_stall_timeout(self):
+        class FakeRaw2BmpSession:
+            def finish(self) -> None:
+                return None
+
+        class FakeRaw2BmpService:
+            def create_task_session(self, folder: Path) -> FakeRaw2BmpSession:
+                del folder
+                return FakeRaw2BmpSession()
+
+        class EmptySyncService(SyncService):
+            def _prefetch_xml_configuration(self, job_id, request, local_dir):
+                del job_id, request, local_dir
+
+            def _run_rsync_once(
+                self,
+                request,
+                local_dir,
+                progress_callback=None,
+            ):
+                del request, local_dir, progress_callback
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_root = Path(temp_dir)
+            local_dir = local_root / "production_folder"
+            local_dir.mkdir()
+            raw_path = local_dir / "source.raw"
+            raw_path.write_bytes(b"raw")
+            (local_dir / "raw_file_manifest.xml").write_text(
+                '<manifest><file name="source.raw" /></manifest>',
+                encoding="utf-8",
+            )
+            service = EmptySyncService(
+                AppConfig(
+                    local_root=local_root,
+                    task_stall_timeout_seconds=10,
+                ),
+                FakeRaw2BmpService(),
+            )
+            request = service.build_request(
+                {
+                    "folder_name": "production_folder",
+                    "local_root": str(local_root),
+                    "enable_transcode_rename": False,
+                }
+            )
+            job_id, _ = service.create_job(request)
+            repository = TaskRepository(local_dir / "tasks.sqlite3")
+            repository.upsert_raw_file(
+                folder_name="production_folder",
+                raw_path=raw_path,
+                sync_job_id=job_id,
+                transcode_rename_enabled=False,
+            )
+
+            with patch(
+                "fa_server.services.sync_service.time.monotonic",
+                side_effect=[0.0, 10.0, 10.0],
+            ):
+                service.run_job(job_id, request)
+
             self.assertEqual("completed", repository.get_sync_job(job_id)["status"])
 
     def test_active_sync_scan_does_not_reprocess_seen_raw_file(self):

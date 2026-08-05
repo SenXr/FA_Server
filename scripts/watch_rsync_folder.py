@@ -9,7 +9,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-
 FOLDER_NAME_MATCH = "raw_test"
 RSYNC_COMMAND = "rsync"
 RSYNC_REMOTE_BASE = "rsync://10.88.7.117/data"
@@ -18,11 +17,11 @@ LATEST_FOLDER_LIMIT = 10
 FA_SERVER_URL = "http://127.0.0.1:5000"
 API_KEY = "dev-api-key"
 
-CHECK_INTERVAL_SECONDS = 60
+CHECK_INTERVAL_SECONDS = 600
 SUPER_RESOLUTION_DELAY_SECONDS = 180
 SUPER_RESOLUTION_BATCH_SIZE = 150
 RSYNC_CHECK_TIMEOUT_SECONDS = 30
-HTTP_TIMEOUT_SECONDS = 30
+HTTP_TIMEOUT_SECONDS = 180
 
 
 def log(message: str) -> None:

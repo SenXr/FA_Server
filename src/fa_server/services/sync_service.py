@@ -36,6 +36,10 @@ MAX_RSYNC_ERROR_OUTPUT_BYTES = 64 * 1024
 logger = logging.getLogger(__name__)
 
 
+class TaskStallTimeout(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class SyncTaskRequest:
     folder_name: str
@@ -157,6 +161,25 @@ class SyncService:
         raw2bmp_session = self.raw2bmp_service.create_task_session(local_dir)
         waiting_for_xml_logged = False
 
+        def raise_if_stalled() -> None:
+            elapsed = time.monotonic() - last_new_file_at
+            if elapsed < self.config.task_stall_timeout_seconds:
+                return
+            manifest = read_raw_manifest(local_dir)
+            if manifest and sync_manifest_complete(
+                local_dir,
+                manifest,
+                transcode_rename_enabled=request.enable_transcode_rename,
+            ):
+                return
+            expected_count = manifest.expected_count if manifest else None
+            raise TaskStallTimeout(
+                "XML target was not reached before the internal stall timeout "
+                f"({self.config.task_stall_timeout_seconds}s); "
+                f"expected={expected_count if expected_count is not None else 'unknown'} "
+                f"discovered={total_new_files}"
+            )
+
         def process_available_files(
             *,
             rsync_active: bool,
@@ -179,6 +202,7 @@ class SyncService:
                         request.folder_name,
                     )
                     waiting_for_xml_logged = True
+                raise_if_stalled()
                 return
 
             if waiting_for_xml_logged:
@@ -204,6 +228,7 @@ class SyncService:
                 ),
             )
             if not new_count:
+                raise_if_stalled()
                 return
 
             total_new_files += new_count
@@ -255,6 +280,21 @@ class SyncService:
                     return
 
                 time.sleep(request.poll_interval_seconds)
+        except TaskStallTimeout as exc:
+            logger.warning(
+                "Sync task timed out: job_id=%s folder_name=%s reason=%s",
+                job_id,
+                request.folder_name,
+                exc,
+            )
+            repository.update_sync_job(
+                job_id,
+                status="timed_out",
+                finished_at=utc_now(),
+                error_message=str(exc),
+                synced_file_count=total_new_files,
+            )
+            return
         except Exception as exc:
             repository.update_sync_job(
                 job_id,

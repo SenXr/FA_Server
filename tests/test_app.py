@@ -241,10 +241,15 @@ class AppTests(unittest.TestCase):
         response = client.get("/openapi.json")
 
         self.assertEqual(200, response.status_code)
-        statuses = response.json["components"]["schemas"][
+        sr_statuses = response.json["components"]["schemas"][
             "SuperResolutionJobStatus"
         ]["properties"]["status"]["enum"]
-        self.assertNotIn("partially_completed", statuses)
+        sync_statuses = response.json["components"]["schemas"][
+            "SyncJobStatus"
+        ]["properties"]["status"]["enum"]
+        self.assertNotIn("partially_completed", sr_statuses)
+        self.assertIn("timed_out", sr_statuses)
+        self.assertIn("timed_out", sync_statuses)
         self.assertNotIn(
             "idle_timeout_seconds",
             response.json["components"]["schemas"][

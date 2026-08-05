@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -24,6 +25,7 @@ from fa_server.storage import ImageTask, TaskRepository, utc_now
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SR_MODEL_PATH = PROJECT_ROOT / "models" / "super_resolution" / "best_model.pth"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -83,10 +85,12 @@ class SuperResolutionService:
         model_runner: ModelRunner | None = None,
         *,
         sleep_func=time.sleep,
+        monotonic_func=time.monotonic,
     ):
         self.config = config
         self.model_runner = model_runner or ModelRunner()
         self.sleep_func = sleep_func
+        self.monotonic_func = monotonic_func
 
     def build_request(self, payload: dict) -> SuperResolutionTaskRequest:
         folder_name = validate_folder_name(payload.get("folder_name", ""))
@@ -149,6 +153,7 @@ class SuperResolutionService:
         output_dir = folder_dir(request.local_root, request.folder_name) / request.output_dirname
         output_dir.mkdir(parents=True, exist_ok=True)
         processed_count = 0
+        last_progress_at = self.monotonic_func()
 
         repository.update_sr_job(job_id, status="running", started_at=utc_now())
         try:
@@ -163,6 +168,7 @@ class SuperResolutionService:
                         repository,
                         request.model_path,
                     )
+                    last_progress_at = self.monotonic_func()
                     repository.update_sr_job(
                         job_id,
                         status="running",
@@ -180,6 +186,31 @@ class SuperResolutionService:
                         status="completed",
                         finished_at=utc_now(),
                         processed_file_count=processed_count,
+                    )
+                    return
+
+                if (
+                    self.monotonic_func() - last_progress_at
+                    >= self.config.task_stall_timeout_seconds
+                ):
+                    message = (
+                        "XML target was not reached before the internal stall "
+                        f"timeout ({self.config.task_stall_timeout_seconds}s); "
+                        f"processed={processed_count}"
+                    )
+                    logger.warning(
+                        "Super-resolution task timed out: job_id=%s "
+                        "folder_name=%s reason=%s",
+                        job_id,
+                        request.folder_name,
+                        message,
+                    )
+                    repository.update_sr_job(
+                        job_id,
+                        status="timed_out",
+                        finished_at=utc_now(),
+                        processed_file_count=processed_count,
+                        error_message=message,
                     )
                     return
 

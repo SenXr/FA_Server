@@ -687,6 +687,38 @@ class SuperResolutionServiceTests(unittest.TestCase):
             self.assertEqual("completed", repository.get_sr_job(job_id)["status"])
             self.assertEqual([10], clock.sleep_calls)
 
+    def test_ends_as_timed_out_after_internal_stall_timeout(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            folder = root / "folder"
+            repository = TaskRepository(folder / "tasks.sqlite3")
+            runner = RecordingModelRunner()
+            clock = FakeClock()
+            service = SuperResolutionService(
+                AppConfig(
+                    local_root=root,
+                    task_stall_timeout_seconds=10,
+                ),
+                runner,
+                sleep_func=clock.sleep,
+                monotonic_func=clock.monotonic,
+            )
+            request = SuperResolutionTaskRequest(
+                folder_name="folder",
+                local_root=root,
+                poll_interval_seconds=10,
+            )
+            job_id, _ = service.create_job(request)
+
+            service.run_job(job_id, request)
+
+            job = repository.get_sr_job(job_id)
+            assert job is not None
+            self.assertEqual("timed_out", job["status"])
+            self.assertIsNotNone(job["finished_at"])
+            self.assertIn("XML target", job["error_message"])
+            self.assertEqual([10], clock.sleep_calls)
+
 
 if __name__ == "__main__":
     unittest.main()
