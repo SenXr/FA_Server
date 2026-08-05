@@ -1,63 +1,76 @@
 # FA Server
 
-FA Server 是一个基于 Flask 的文件夹级任务服务，用于在一台服务器上统一管理两类流程：
+FA Server is a Flask service for folder-based image processing. It runs two
+workflows:
 
-1. 基于 `rsync` 的增量数据同步任务。
-2. 基于 SQLite 任务表的超分辨增强任务。
+1. Incremental file synchronization over `rsync`, with optional RAW-to-BMP
+   conversion and XML-based renaming.
+2. Batched super-resolution inference over images recorded in SQLite.
 
-服务按 `folder_name` 作为任务目录维度。每个任务目录维护自己的 SQLite 数据库：
+Each folder is an independent task scope with its own database:
 
 ```text
 <local_root>/<folder_name>/tasks.sqlite3
 ```
 
-默认数据根目录为：
+## Processing Flow
+
+The sync service fetches `raw_file_manifest.xml` first when it is available,
+then starts the folder sync. Files that have finished copying are registered and
+processed while `rsync` is still running. With `enable_transcode_rename=true`,
+only `.raw` files are sent to the RAW processor.
+
+The super-resolution service reads pending input records from the same SQLite
+database and sends them to the model in batches. Models are cached in the server
+process, and inference is serialized to avoid concurrent access to the same
+accelerator. Output files are written under:
 
 ```text
-<project>/data/rsync_data
+<local_root>/<folder_name>/Super_Resolution/
 ```
 
-## 功能概览
+Both workflows use the XML manifest as the completion target. A task becomes
+`completed` only when that target is met. If no progress is made before the
+internal stall timeout, the task ends as `timed_out` instead of waiting forever.
 
-- 同步服务：调用本机 `rsync` 从远端拉取指定文件夹数据。
-- 流水线处理：批量同步前优先获取 XML 配置；长时间 rsync 运行期间，持续发现已落盘文件并执行 RAW 处理。
-- RAW 处理：同步后可默认触发 RAW 转 BMP 与重命名流程。
-- 任务完成：根据 `raw_file_manifest.xml` 判断预计文件是否全部同步并处理完成；长时间无进展则以 `timed_out` 结束，避免任务无限等待。
-- 超分辨服务：读取任务目录 SQLite 中的待处理图片，以批次方式调用模型推理。
-- 模型加载：超分辨模型在服务进程内只加载一次。
-- 内存控制：rsync 输出不驻留内存，RAW 明细及时释放，模型推理串行执行。
-- 完成状态：超分辨完成数量达到 XML 预计数量后返回 `completed`，否则持续等待增量。
-- 清理服务：服务启动时检查一次数据目录，之后默认每天检查一次，保留最新的 10 个任务文件夹。
-- 离线 Swagger：`/docs` 使用本地静态资源，不依赖公网 CDN。
-
-## 项目结构
+## Project Layout
 
 ```text
-run.py                         服务启动入口
-run_mcp.py                     FA Server stdio MCP 启动入口
-src/fa_server/                 Flask API、任务服务、SQLite 存储、后台执行器
-src/fa_server_mcp/             MCP 协议服务与 FA Server HTTP 客户端
-src/raw2bmp/                   RAW 转 BMP 与 XML 解析对接模块
-src/ep5_enhancement/           超分辨算法对接模块
-skills/fa-server-operations/   Codex 任务操作 Skill
-models/super_resolution/       超分辨模型文件目录
-data/rsync_data/               默认任务数据目录
-log/                           RAW 处理、purge 等专项日志目录
-logs/fa_server.log             接口服务统一主日志
-docs/api.md                    HTTP 接口文档
-tests/                         单元测试
+run.py                         HTTP service entry point
+run_mcp.py                     stdio MCP entry point
+src/fa_server/                 API, task services, storage, and workers
+src/fa_server_mcp/             MCP server and HTTP client
+src/raw2bmp/                   RAW conversion integration
+src/ep5_enhancement/           super-resolution integration
+models/super_resolution/       model files
+scripts/                       maintenance and automation scripts
+docs/api.md                    HTTP API reference
+docs/mcp_and_skill.md          MCP and Codex Skill setup
+tests/                         test suite
 ```
 
-## 环境准备
+Runtime data is stored in `data/rsync_data/` by default. General service logs
+are written to `logs/fa_server.log`; processor and purge logs are kept in
+`log/`.
 
-Windows PowerShell：
+## Requirements
+
+- Python 3.10 or newer
+- A local `rsync` executable
+- Access to the configured rsync server
+- Production RAW and super-resolution dependencies when deploying the real
+  processing implementations
+
+Create the virtual environment and install dependencies.
+
+Windows PowerShell:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
-Linux：
+Linux:
 
 ```bash
 python3 -m venv .venv
@@ -65,175 +78,150 @@ python3 -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-生产环境需要确保本机可直接调用 `rsync`。如果不是系统 PATH 中的 `rsync`，可通过 `FA_RSYNC` 指定绝对路径。
-
-## 启动服务
-
-本机测试：
+## Run the Service
 
 ```powershell
 .\.venv\Scripts\python run.py
 ```
 
-局域网访问时，需要监听所有网卡：
+To accept connections from other machines on the LAN:
 
 ```powershell
 $env:FA_HOST = "0.0.0.0"
 .\.venv\Scripts\python run.py
 ```
 
-启动后可访问：
+Available endpoints after startup:
 
 ```text
-健康检查: http://127.0.0.1:5000/health
-Swagger:  http://127.0.0.1:5000/docs
-OpenAPI:  http://127.0.0.1:5000/openapi.json
+Health check  http://127.0.0.1:5000/health
+Swagger UI   http://127.0.0.1:5000/docs
+OpenAPI      http://127.0.0.1:5000/openapi.json
 ```
 
-如果从另一台服务器访问，请将 `127.0.0.1` 替换为服务所在机器的 IP。
+Swagger UI is served from local static files and does not require internet
+access.
 
-## 关键配置
+## Configuration
 
-配置通过环境变量传入：
+Configuration is read from environment variables at startup.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FA_HOST` | `127.0.0.1` | HTTP bind address |
+| `FA_PORT` | `5000` | HTTP port |
+| `FA_API_KEY` | `dev-api-key` | API key for `/api/v1/*` |
+| `FA_AUTH_ENABLED` | `true` | Enable API key authentication |
+| `FA_REMOTE_BASE` | `rsync://admin@172.24.22.29:8873/data` | rsync data root |
+| `FA_LOCAL_ROOT` | `<project>/data/rsync_data` | local data root |
+| `FA_RSYNC` | `rsync` | rsync command or absolute executable path |
+| `FA_POLL_INTERVAL_SECONDS` | `30` | sync polling interval |
+| `FA_RSYNC_TIMEOUT_SECONDS` | `3600` | timeout for one rsync execution |
+| `FA_TASK_STALL_TIMEOUT_SECONDS` | `3600` | maximum time without task progress |
+| `FA_RAW_EXTENSIONS` | `.raw,.bmp` | extensions registered for image processing |
+| `FA_DATABASE_FILENAME` | `tasks.sqlite3` | per-folder task database name |
+| `FA_SR_BATCH_SIZE` | `3` | default inference batch size |
+| `FA_SR_POLL_INTERVAL_SECONDS` | `10` | super-resolution polling interval |
+| `FA_SR_OUTPUT_DIRNAME` | `Super_Resolution` | inference output directory name |
+| `FA_PURGE_ENABLED` | `true` | enable folder retention checks |
+| `FA_PURGE_MAX_FOLDERS` | `10` | number of task folders to retain |
+| `FA_PURGE_INTERVAL_SECONDS` | `86400` | retention check interval |
+
+`FA_TASK_STALL_TIMEOUT_SECONDS` is an internal service setting, not an API
+request field. Sync progress means a new file was discovered; super-resolution
+progress means a batch completed successfully.
+
+## API
+
+The main routes are:
 
 ```text
-FA_HOST=127.0.0.1
-FA_PORT=5000
-FA_REMOTE_BASE=rsync://admin@172.24.22.29:8873/data
-FA_LOCAL_ROOT=<project>/data/rsync_data
-FA_RSYNC=rsync
-FA_API_KEY=dev-api-key
-FA_DATABASE_FILENAME=tasks.sqlite3
-FA_DEBUG=false
+POST /api/v1/sync/tasks/{folder_name}
+POST /api/v1/sync/tasks/{folder_name}/updates
+GET  /api/v1/sync/jobs/{job_id}
+
+POST /api/v1/super-resolution/tasks
+GET  /api/v1/super-resolution/tasks/{job_id}
 ```
 
-同步任务相关：
+An initial sync task is unique per folder. Use the update route to check an
+existing folder for new files. The service also prevents parallel active tasks
+for the same folder where processing would conflict.
 
-```text
-FA_POLL_INTERVAL_SECONDS=30
-FA_RSYNC_TIMEOUT_SECONDS=3600
-FA_TASK_STALL_TIMEOUT_SECONDS=3600
-FA_RAW_EXTENSIONS=.raw,.bmp
-```
-
-`FA_TASK_STALL_TIMEOUT_SECONDS` 是服务内部的无进展超时，默认 3600 秒，不属于接口请求参数。同步任务以最近发现新文件的时间计时，超分辨任务以最近成功处理批次的时间计时。达到 XML 目标时仍返回 `completed`；未达到目标且持续无进展时返回 `timed_out`。
-
-超分辨任务相关：
-
-```text
-FA_SR_BATCH_SIZE=3
-FA_SR_POLL_INTERVAL_SECONDS=10
-FA_SR_OUTPUT_DIRNAME=Super_Resolution
-```
-
-清理服务相关：
-
-```text
-FA_PURGE_ENABLED=true
-FA_PURGE_MAX_FOLDERS=10
-FA_PURGE_INTERVAL_SECONDS=86400
-FA_PURGE_LOG_FILENAME=log/purge.log
-```
-
-## 服务日志
-
-执行 `python run.py` 后，接口访问记录、后台同步任务异常、超分辨任务异常和
-RAW 单文件处理异常会统一写入：
-
-```text
-logs/fa_server.log
-```
-
-日志达到 10 MB 后自动滚动，默认保留 5 个历史文件。控制台仍会同步显示日志。
-后台任务异常会记录 `job_id`、`folder_name` 和完整 traceback，便于从接口返回的
-`error_message` 继续定位根因。
-
-Windows PowerShell 实时查看：
-
-```powershell
-Get-Content .\logs\fa_server.log -Wait
-```
-
-Linux 实时查看：
-
-```bash
-tail -f logs/fa_server.log
-```
-
-## 数据目录约定
-
-一个典型同步目录如下：
-
-```text
-data/rsync_data/raw_test/
-  raw_file_manifest.xml
-  test_001T.bmp
-  test_002T.bmp
-  tasks.sqlite3
-  Super_Resolution/
-    test_001T_sr.bmp
-    test_002T_sr.bmp
-```
-
-开启 `enable_transcode_rename=true` 时，同步服务只对 `.raw` 文件做转码与重命名。最终保留的目标产物是类似 `test_001T.bmp` 的文件。
-
-## API 文档
-
-接口说明见：
-
-[docs/api.md](docs/api.md)
-
-MCP 与 Codex Skill 的配置和使用说明见：
-
-[docs/mcp_and_skill.md](docs/mcp_and_skill.md)
-
-Swagger 测试页面：
-
-```text
-http://127.0.0.1:5000/docs
-```
-
-所有 `/api/v1/*` 接口默认需要 API Key，可使用以下任一形式：
+Send the API key with either header:
 
 ```text
 X-API-Key: <api-key>
 Authorization: Bearer <api-key>
 ```
 
-## 生产对接点
+See [docs/api.md](docs/api.md) for request fields, responses, and examples.
 
-以下模块是后续替换真实生产代码的主要边界：
+## Task Data and Status
 
-- `src/raw2bmp/`：对接实际 XML 解析、RAW 解码、BMP 输出和命名逻辑。
-- `src/ep5_enhancement/`：对接实际 Unet 超分辨模型加载与批量推理逻辑。
-- `models/super_resolution/`：放置真实模型文件。
+`sync_jobs`, `sr_jobs`, and `image_tasks` are stored in the folder's
+`tasks.sqlite3`. Typical task states are:
 
-当前仓库内的算法实现主要用于本地联调和流程验证。
+| Status | Meaning |
+| --- | --- |
+| `queued` | Waiting for a worker |
+| `running` | Actively processing or waiting for manifest data |
+| `completed` | XML completion target reached |
+| `timed_out` | No progress before the internal timeout |
+| `failed` | Processing stopped because of an error |
 
-## 重置超分辨记录
+A `timed_out` task is not successful. Check `error_message`, the XML manifest,
+and `image_counts` before starting another task.
 
-停止接口服务后，执行：
+## Logs
+
+The main log rotates at 10 MB and keeps five backups:
+
+```text
+logs/fa_server.log
+```
+
+Follow it from PowerShell:
+
+```powershell
+Get-Content .\logs\fa_server.log -Wait
+```
+
+Or from Linux:
+
+```bash
+tail -f logs/fa_server.log
+```
+
+## Production Integrations
+
+Production deployments must provide implementations compatible with these
+boundaries:
+
+- `src/raw2bmp/`: XML loading, RAW decoding, BMP output, and final naming.
+- `src/ep5_enhancement/`: model loading and batched inference.
+- `models/super_resolution/`: the model files used by the inference adapter.
+
+Image completion is recorded against the input path. The server does not assume
+that an output file name can be derived from the input name.
+
+## Maintenance
+
+Reset super-resolution records after stopping the service:
 
 ```powershell
 .\.venv\Scripts\python scripts\reset_sr_records.py D:\data\folder\tasks.sqlite3
 ```
 
-脚本会自动备份数据库、删除 `sr_jobs`，并将已完成转码的图片恢复为超分辨 `pending` 状态。检测到 `queued` 或 `running` 任务时会拒绝操作；确认原进程已停止后可使用 `--force`。如明确不需要备份，可使用 `--no-backup`。
+The script creates a backup by default and refuses to modify a database with an
+active task. Run it with `--help` for override options.
 
-## 测试
+Run the test suite:
 
 ```powershell
 .\.venv\Scripts\python -m unittest discover -s tests
-```
-
-编译检查：
-
-```powershell
 .\.venv\Scripts\python -m compileall src tests
 ```
 
-MCP 服务测试：
-
-```powershell
-.\.venv\Scripts\python -m unittest tests.test_mcp_server
-```
+MCP setup and usage are documented in
+[docs/mcp_and_skill.md](docs/mcp_and_skill.md).
